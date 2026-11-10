@@ -109,9 +109,6 @@ fn print_plan(plan: &converge::Plan, dry_run: bool) {
             drift.current.as_deref().unwrap_or("unreadable")
         );
     }
-    for skip in &plan.skips {
-        println!("  SKIPPED {} ({})", skip.live, skip.why);
-    }
     for anomaly in &plan.anomalies {
         eprintln!("  ANOMALY {anomaly}");
     }

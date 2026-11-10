@@ -59,6 +59,14 @@ pub fn probe(host: &dyn Host, record: &ManagedRecord) -> Result<Probe> {
         });
     }
     let text = host.read(&record.target)?;
+    classify(&text, record)
+}
+
+/// Classify one already-read snapshot of the target.
+///
+/// `replace` reads the file once and classifies that same text: probing and then re-reading
+/// is a TOCTOU window in which a package update can shift the line the patch is aimed at.
+fn classify(text: &str, record: &ManagedRecord) -> Result<Probe> {
     let lines: Vec<&str> = text.lines().collect();
     let re = compile(&record.match_expr, &record.name)?;
 
@@ -124,7 +132,8 @@ pub fn probe(host: &dyn Host, record: &ManagedRecord) -> Result<Probe> {
 ///
 /// The caller must have probed first; `apply` never patches what it has not classified.
 pub fn replace(host: &dyn Host, record: &ManagedRecord) -> Result<()> {
-    let probe = probe(host, record)?;
+    let text = host.read(&record.target)?;
+    let probe = classify(&text, record)?;
     let line_no = match (&probe.state, probe.line_no) {
         (State::Differs { .. }, Some(n)) => n,
         (State::Ok, _) => return Ok(()),
@@ -135,18 +144,36 @@ pub fn replace(host: &dyn Host, record: &ManagedRecord) -> Result<()> {
             )));
         }
     };
-
-    let text = host.read(&record.target)?;
-    let had_trailing_newline = text.ends_with('\n');
-    // `lines()` drops the terminators, so rebuilding joins with `\n` and re-adds the
-    // trailing newline only when the original had one.
-    let mut lines: Vec<&str> = text.lines().collect();
-    lines[line_no - 1] = record.line.as_str();
-    let mut rebuilt = lines.join("\n");
-    if had_trailing_newline {
-        rebuilt.push('\n');
-    }
+    let rebuilt = patch_line(&text, line_no - 1, record.line.as_str());
     host.write(&record.target, rebuilt.as_bytes(), None)
+}
+
+/// Replace one line and keep every other byte, including the file's line terminators.
+///
+/// Rebuilding with `lines()` + `join("\n")` matches the documented contract only for LF
+/// files: a CRLF target silently becomes LF-only, which is a change the record never asked
+/// for.
+fn patch_line(text: &str, index: usize, new_line: &str) -> String {
+    let mut out = String::with_capacity(text.len() + new_line.len());
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        if i == index {
+            out.push_str(new_line);
+            out.push_str(line_terminator(line));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+fn line_terminator(line: &str) -> &'static str {
+    if line.ends_with("\r\n") {
+        "\r\n"
+    } else if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    }
 }
 
 fn compile(pattern: &str, name: &str) -> Result<Regex> {

@@ -411,9 +411,13 @@ fn check_timer(ctx: &Ctx<'_>) -> Result<Verdict> {
 
 /// Files that should not be on the host: declared removals plus anything the manifest
 /// records but the intent no longer ships.
+///
+/// The derivation lives in [`converge::plan`] — the same one apply executes — so the verdict
+/// and the action cannot disagree. A pending prune is **DRIFT**, not a warning: it is the
+/// double-writer the cutover exists to prevent, and the report's exit code has to say so.
 fn check_prune(ctx: &Ctx<'_>) -> Result<Verdict> {
     let plan = converge::plan(ctx.intent, ctx.host)?;
-    let mut pending: Vec<&str> = plan
+    let pending: Vec<&str> = plan
         .changes
         .iter()
         .filter_map(|c| match c {
@@ -421,14 +425,6 @@ fn check_prune(ctx: &Ctx<'_>) -> Result<Verdict> {
             _ => None,
         })
         .collect();
-    let manifest = converge::Manifest::load(ctx.host)?;
-    let wanted: std::collections::BTreeSet<&str> =
-        ctx.intent.mirror.iter().map(|m| m.live.as_str()).collect();
-    for owned in manifest.owned.iter() {
-        if !wanted.contains(owned.as_str()) && !pending.contains(&owned.as_str()) {
-            pending.push(owned.as_str());
-        }
-    }
     Ok(if pending.is_empty() {
         verdict(
             "PRUNE",
@@ -438,7 +434,7 @@ fn check_prune(ctx: &Ctx<'_>) -> Result<Verdict> {
     } else {
         verdict(
             "PRUNE",
-            Class::Warn,
+            Class::Drift,
             format!("{} path(s) to remove at apply: {}", pending.len(), pending.join(" ")),
         )
     })

@@ -62,9 +62,3 @@ impl From<std::io::Error> for Failure {
         Failure::partial(format!("i/o: {e}"))
     }
 }
-
-impl From<anyhow::Error> for Failure {
-    fn from(e: anyhow::Error) -> Self {
-        Failure::partial(format!("{e:#}"))
-    }
-}

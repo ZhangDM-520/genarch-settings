@@ -5,14 +5,29 @@
 //! is the cheap half of the contract: an anchor that stops resolving turns red here, not after a
 //! human goes looking for a rule that moved.
 
-use std::path::Path;
 
 use genarch::check::{self, Class, Reach};
 use genarch::host::FixtureHost;
 use genarch::intent::Intent;
 use genarch::report;
 
-const LEDGER: &str = "/home/<user>/Projects/system-tuning/docs/findings.md";
+/// The ledger repo. `SYSTEM_TUNING_ROOT` exists for a checkout somewhere else; the default is
+/// the canonical path.
+fn ledger_root() -> std::path::PathBuf {
+    std::env::var_os("SYSTEM_TUNING_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/home/<user>/Projects/system-tuning"))
+}
+
+fn contract_rows(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .map(|line| {
+            let (id, anchor) = line.split_once('\t').expect("contract row is ID<TAB>anchor");
+            (id.to_string(), anchor.to_string())
+        })
+        .collect()
+}
 
 fn headings(text: &str) -> Vec<String> {
     text.lines()
@@ -23,12 +38,12 @@ fn headings(text: &str) -> Vec<String> {
 
 #[test]
 fn every_registry_anchor_resolves_in_the_ledger() {
-    let path = Path::new(LEDGER);
-    if !path.is_file() {
-        eprintln!("skipping: no ledger at {}", path.display());
-        return;
-    }
-    let text = std::fs::read_to_string(path).unwrap();
+    // A missing ledger used to return green. That is the contract failing open: the very
+    // drift this test exists to catch would have been invisible on any machine without a
+    // checkout at the hardcoded path.
+    let path = ledger_root().join("docs/findings.md");
+    assert!(path.is_file(), "no ledger at {} — set SYSTEM_TUNING_ROOT", path.display());
+    let text = std::fs::read_to_string(&path).unwrap();
     let heads = headings(&text);
     let mut missing = Vec::new();
     for check in check::REGISTRY {
@@ -97,4 +112,26 @@ fn json_lists_every_registry_row_and_carries_the_scope() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_pinned_contract_equals_the_registry_and_the_owner_copy() {
+    // "One home, one copy, asserted equal" was the design. Without this test the pinned file
+    // is decoration: the registry could gain, lose or rename an anchor and the two copies
+    // would drift until somebody read both.
+    let pinned = std::fs::read_to_string("tests/contract.tsv").unwrap();
+    let rows = contract_rows(&pinned);
+    let from_registry: Vec<(String, String)> = check::REGISTRY
+        .iter()
+        .map(|c| (c.id.to_string(), c.doc.to_string()))
+        .collect();
+    assert_eq!(rows, from_registry, "tests/contract.tsv and the registry disagree");
+
+    let owner = ledger_root().join("docs/contract.tsv");
+    assert!(owner.is_file(), "no owner copy at {} — set SYSTEM_TUNING_ROOT", owner.display());
+    assert_eq!(
+        std::fs::read_to_string(&owner).unwrap(),
+        pinned,
+        "the pinned copy and system-tuning's owner copy disagree"
+    );
 }

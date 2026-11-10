@@ -416,9 +416,7 @@ impl Intent {
                 )));
             }
         }
-        let mut claimed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for record in &self.managed {
-            claimed.entry(&record.target).or_default().push(&record.name);
             if record.match_expr.trim().is_empty() {
                 return Err(Failure::precondition(format!(
                     "managed '{}': empty match expression",

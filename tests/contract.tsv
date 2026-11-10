@@ -1,0 +1,18 @@
+# Cross-repo contract: check ID -> doc anchor in docs/findings.md of the ledger repo.
+#
+# Owner: system-tuning (the ledger is the home of judgement) at docs/contract.tsv.
+# Pinned copy: genarch-settings at tests/contract.tsv. The engine's gate asserts the two are
+# equal, equal to the compiled registry, and that every anchor resolves to a real `##`
+# heading. Edit both copies in one change or the gate fails: a silently skipped check is the
+# failure mode this seam exists to prevent.
+MIRROR	findings#intent
+MANAGED	findings#managed
+SYNC	findings#writeback
+CEIL	findings#ceil
+CO	findings#co
+SMU	findings#ppt
+POWER	findings#eco
+WIFI	findings#wifi
+IO	findings#writeback
+TIMER	findings#timer
+PRUNE	findings#intent

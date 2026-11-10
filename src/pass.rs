@@ -117,10 +117,13 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
     let governor_path = "/sys/devices/system/cpu/cpuidle/current_governor";
     if host.exists(governor_path) {
         let want = intent.passes.idle_governor.as_str();
-        if host.read_opt(governor_path).map(|s| s.trim().to_string()).as_deref() != Some(want)
-            && host.write(governor_path, want.as_bytes(), None).is_ok() {
-                report.say(format!("cpuidle governor={want}"));
-            }
+        if host.read_opt(governor_path).map(|s| s.trim().to_string()).as_deref() != Some(want) {
+            // A refused write is a failure the operator must see: a pass that "succeeds"
+            // while the governor never moved is the silent divergence this engine exists
+            // to end.
+            host.write(governor_path, want.as_bytes(), None)?;
+            report.say(format!("cpuidle governor={want}"));
+        }
     }
 
     apply_ceil(host, report)?;
@@ -132,7 +135,8 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
                 let mut fields = line.split_whitespace();
                 fields.next() == Some(device.as_str()) && line.contains("*enabled")
             });
-            if armed && host.write("/proc/acpi/wakeup", device.as_bytes(), None).is_ok() {
+            if armed {
+                host.write("/proc/acpi/wakeup", device.as_bytes(), None)?;
                 report.say(format!("wake disabled: {device}"));
             }
         }
@@ -154,7 +158,8 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
             let id = format!("{}:{}", vendor.trim(), product.trim());
             if intent.passes.usb_autosuspend.contains(&id) {
                 let control = format!("/sys/bus/usb/devices/{name}/power/control");
-                if host.exists(&control) && host.write(&control, b"auto", None).is_ok() {
+                if host.exists(&control) {
+                    host.write(&control, b"auto", None)?;
                     report.say(format!("bt usb autosuspend: {name}"));
                 }
             }
@@ -191,9 +196,8 @@ fn reassert_sysctl(host: &dyn Host, intent: &Intent, report: &mut Report) -> Res
         if current.as_deref() == Some(crate::converge::norm_sysctl(want).as_str()) {
             continue;
         }
-        if host.write(&path, want.as_bytes(), None).is_ok() {
-            changed.push(key.clone());
-        }
+        host.write(&path, want.as_bytes(), None)?;
+        changed.push(key.clone());
     }
     if !changed.is_empty() {
         report.say(format!("sysctl re-asserted: {}", changed.join(" ")));

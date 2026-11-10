@@ -20,10 +20,13 @@ the gate.
 - `FixtureHost` — a scratch tree; records writes, answers `run` from a canned table.
 
 The shell engine's entire testability rested on one path-prefix hack (`ECO_ROOT`). Making it a
-trait with two adapters is what lets the 17 behavioural tests in `tests/converge.rs` assert
-byte-level guarantees without a VM. **No module above `host` opens a file or spawns a process.**
-If a future module needs to, the port gets a method — that is the cost of the seam and it is
-worth paying.
+trait with two adapters is what lets the behavioural tests in `tests/converge.rs` assert
+byte-level guarantees without a VM. **No module above `host` touches live host state directly**;
+the manifest, the apply lock (`Host::lock`), pre-image bytes and modes (`read_bytes`,
+`mode_of`) and every `/etc`, `/sys`, `/proc` read or write go through the trait. Two exceptions
+are input data, not host state: `intent` reads its own package tree and `import` reads an offline
+`state/` tree. If a future module needs live state, the port gets a method — that is the cost of
+the seam and it is worth paying.
 
 `ryzenadj` is a second, narrower seam: it is a true external binary, so the engine builds argv and
 the fixture records it. That makes the packing arithmetic testable exhaustively (see
@@ -84,10 +87,29 @@ Encoding the split in the interface means a unit cannot accidentally ask for the
 - **No async runtime, no daemon.** Nothing needs it; a second caller would make the seam real,
   and there is no second caller.
 
+## Write semantics (settled 2026-11-11)
+
+Two corrections after the first review, both measured rather than reasoned:
+
+- **Atomic where it is possible, in place where it is not.** `sysfs`/`procfs` refuse a sibling
+  temp file (`touch /proc/sys/kernel/printk.tmp` → ENOENT; `.tmp` under a policy dir → EACCES),
+  so `/sys` and `/proc` writes go straight to the existing attribute. An earlier uniform
+  temp+rename made `converge ceil` and every runtime sysctl correction fail with exit 3 while
+  the knob stayed wrong. Everything else is `create_new` + `O_NOFOLLOW` + fsync + rename.
+- **The manifest owns what the engine writes.** `owned` is prune-eligible (mirrors + the sysctl
+  projection); `touched` records the foreign files patched through a managed record and is never
+  pruned. The projection used to be written but unowned, so emptying `sysctl.toml` left
+  `/etc/sysctl.d/90-genarch.conf` live and unreported — a second home for every value.
+
 ## Open
 
 - License and repository metadata (owner decision).
-- The cross-repo contract file: check IDs + doc anchors, owned by `system-tuning` (which keeps the
-  ledger) and pinned by a copy here, so a drifted anchor is red on both sides.
 - Whether `hw-tune.fish` should be pruned at cutover (it is imported for byte-parity today; the
   engine replaces it, so the cutover intent drops it and `apply` prunes it).
+
+## Closed
+
+- **The cross-repo contract** (2026-11-11): `system-tuning/docs/contract.tsv` is the owner copy,
+  `tests/contract.tsv` is the pinned copy, and `contract.rs` asserts three things — the pinned
+  file equals the compiled registry, it equals the owner copy, and every anchor resolves to a
+  real `##` heading in `findings.md`. A missing ledger is a failure, not a skip.

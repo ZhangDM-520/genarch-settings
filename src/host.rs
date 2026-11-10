@@ -10,18 +10,109 @@
 //!
 //! - **No write escapes the root.** A path outside it is a hard error, not a skippable
 //!   step (the shell's `assert_in_root`).
-//! - **A write is atomic.** Content goes to a sibling temp file and is renamed, so a
-//!   crash mid-apply cannot leave a half-written config (the shell's `managed_commit_tmp`).
+//! - **A write is atomic where the filesystem allows it.** Content goes to a sibling temp
+//!   file (`O_EXCL|O_NOFOLLOW`, fsynced) and is renamed, so a crash mid-apply cannot leave a
+//!   half-written config (the shell's `managed_commit_tmp`). `/sys` and `/proc` cannot host a
+//!   temp file at all — `sysfs` creates on open and `procfs` fixes its directory — so kernel
+//!   attributes are written in place; see [`kernel_fs`].
 //! - **Mode is explicit.** Source mode wins for a new target; an existing target keeps
 //!   its mode unless the caller says otherwise (an exec-bit regression is invisible until
 //!   a unit fails with 203/EXEC).
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::exit::{Failure, Result};
+
+/// Kernel pseudo-filesystems that must be written in place.
+///
+/// `sysfs` and `procfs` create files as a side effect of an open, so neither a sibling temp
+/// file nor a rename exists there: an atomic-write path aimed at `/sys` fails with EPERM and
+/// leaves the knob unchanged (measured 2026-11-11 on `scaling_max_freq` and
+/// `/proc/sys/kernel/printk`). Those writes are inherently tiny and non-atomic by nature, so
+/// they go straight to the existing file and never touch the mode.
+fn kernel_fs(live: &str) -> bool {
+    live.starts_with("/sys/") || live.starts_with("/proc/")
+}
+
+/// Write to an existing kernel attribute. No temp file, no chmod, no mkdir: the open itself
+/// is the write permission on `sysfs`, and the file is already there.
+fn write_in_place(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
+    file.write_all(bytes)
+        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
+    file.flush()
+        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))
+}
+
+/// Create the sibling temp file with `O_EXCL|O_NOFOLLOW`. A stale temp from a killed run
+/// carries our pid in its name, so it is ours to replace.
+fn open_new(path: &Path) -> Result<std::fs::File> {
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+    };
+    match open() {
+        Ok(file) => Ok(file),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(path)
+                .map_err(|e| Failure::partial(format!("remove stale {}: {e}", path.display())))?;
+            open().map_err(|e| Failure::partial(format!("create {}: {e}", path.display())))
+        }
+        Err(e) => Err(Failure::partial(format!("create {}: {e}", path.display()))),
+    }
+}
+
+/// An exclusive, non-blocking apply lock. Dropping it releases the lock.
+pub struct LockGuard {
+    file: std::fs::File,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn lock_at(path: &Path) -> Result<LockGuard> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Failure::precondition(format!("mkdir {}: {e}", parent.display())))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| Failure::precondition(format!("open {}: {e}", path.display())))?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let mut holder = String::new();
+        let _ = std::io::Read::read_to_string(&mut file, &mut holder);
+        return Err(Failure::precondition(format!(
+            "apply lock held by {} ({})",
+            holder.trim(),
+            path.display()
+        )));
+    }
+    let _ = file.set_len(0);
+    let _ = std::io::Write::write_all(&mut file, format!("pid={} via=genarch\n", std::process::id()).as_bytes());
+    Ok(LockGuard { file })
+}
 
 /// One filesystem entry the engine can see.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +150,29 @@ pub trait Host {
     /// Write `bytes` to a live path atomically, creating parents.
     ///
     /// `mode` is applied only when the target does not exist yet.
+    ///
+    /// Kernel attributes under `/sys` and `/proc` are written in place: those filesystems
+    /// cannot host a sibling temp file or a rename, so the atomic path would fail there.
     fn write(&self, live: &str, bytes: &[u8], mode: Option<u32>) -> Result<()>;
+
+    /// Read a live file as bytes. Mirrors may be opaque (non-UTF-8), and a pre-image must be
+    /// byte-exact, so this is not a convenience wrapper around [`Host::read`].
+    fn read_bytes(&self, live: &str) -> Result<Vec<u8>> {
+        let path = self.try_resolve(live)?;
+        std::fs::read(&path)
+            .map_err(|e| Failure::partial(format!("read {}: {e}", path.display())))
+    }
+
+    /// Permission bits of an existing live file, if it exists. A pre-image copies them:
+    /// an exec-bit lost in a backup is invisible until a unit fails with 203/EXEC.
+    fn mode_of(&self, live: &str) -> Option<u32> {
+        let path = self.try_resolve(live).ok()?;
+        std::fs::metadata(&path).ok().map(|m| m.permissions().mode())
+    }
+
+    /// Exclusive, non-blocking apply lock at `live`. A second holder gets a precondition
+    /// failure naming the first, never interleaved writes.
+    fn lock(&self, live: &str) -> Result<LockGuard>;
 
     /// All regular files under a live directory, recursively, sorted.
     fn walk(&self, live_dir: &str) -> Result<Vec<Entry>>;
@@ -142,25 +255,46 @@ impl Host for RealHost {
 
     fn write(&self, live: &str, bytes: &[u8], mode: Option<u32>) -> Result<()> {
         let path = self.try_resolve(live)?;
+        if kernel_fs(live) {
+            return write_in_place(&path, bytes);
+        }
         let existing_mode = std::fs::metadata(&path).ok().map(|m| m.permissions().mode());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Failure::partial(format!("mkdir {}: {e}", parent.display())))?;
         }
-        let tmp = path.with_extension(format!(
-            "{}.tmp",
-            path.extension().and_then(|e| e.to_str()).unwrap_or("genarch")
-        ));
-        std::fs::write(&tmp, bytes)
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("genarch");
+        let tmp = path.with_extension(format!("{extension}.{}.tmp", std::process::id()));
+        // `create_new` + `O_NOFOLLOW`: the temp path must not be a pre-planted symlink. Apply
+        // runs as root and writes into user-owned trees, so a symlink at a predictable name
+        // would redirect a root write.
+        let mut file = open_new(&tmp)?;
+        use std::io::Write;
+        file.write_all(bytes)
             .map_err(|e| Failure::partial(format!("write {}: {e}", tmp.display())))?;
+        // The rename is only atomic if the data is on disk before it happens.
+        file.sync_all()
+            .map_err(|e| Failure::partial(format!("fsync {}: {e}", tmp.display())))?;
+        drop(file);
         let effective = existing_mode.or(mode);
         if let Some(m) = effective {
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(m))
                 .map_err(|e| Failure::partial(format!("chmod {}: {e}", tmp.display())))?;
         }
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| Failure::partial(format!("rename {}: {e}", path.display())))?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            Failure::partial(format!("rename {}: {e}", path.display()))
+        })?;
+        if let Some(parent) = path.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
         Ok(())
+    }
+
+    fn lock(&self, live: &str) -> Result<LockGuard> {
+        lock_at(&self.try_resolve(live)?)
     }
 
     fn walk(&self, live_dir: &str) -> Result<Vec<Entry>> {
@@ -325,6 +459,10 @@ impl Host for FixtureHost {
         Ok(())
     }
 
+    fn lock(&self, live: &str) -> Result<LockGuard> {
+        lock_at(&self.try_resolve(live)?)
+    }
+
     fn run(&self, argv: &[String]) -> Result<Output> {
         // Nothing is executed. The intent is recorded so a test can assert argv (the
         // ryzenadj packing is exactly an argv property), and the reply comes from a
@@ -377,4 +515,86 @@ fn canned_output(canned: Canned) -> Output {
         let _ = stdin.write_all(canned.stdout.as_bytes());
     }
     child.wait_with_output().expect("canned process output")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("genarch-host-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn kernel_attributes_are_written_in_place() {
+        // sysfs/procfs refuse a sibling temp file outright, so an atomic write there fails and
+        // leaves the knob unchanged (measured 2026-11-11: `touch /proc/sys/kernel/printk.tmp`
+        // → ENOENT, `.tmp` under a policy dir → EACCES). The fixture reproduces the one
+        // property that matters: the directory cannot accept a new entry, but the existing
+        // attribute can be written.
+        let dir = scratch("kernel");
+        let live = "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "4500000").unwrap();
+        std::fs::set_permissions(
+            target.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"4700000", None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "4700000");
+        let _ = std::fs::set_permissions(
+            target.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p != &target)
+            .collect();
+        assert!(leftovers.is_empty(), "kernel write left a temp file: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_writes_are_atomic_and_keep_an_existing_mode() {
+        let dir = scratch("atomic");
+        let live = "/etc/tlp.d/01-x.conf";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "old\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"new\n", Some(0o644)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "an existing target keeps its mode");
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p != &target)
+            .collect();
+        assert!(leftovers.is_empty(), "atomic write left a temp file: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_kernel_filesystems_skip_the_atomic_path() {
+        assert!(kernel_fs("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"));
+        assert!(kernel_fs("/proc/sys/vm/swappiness"));
+        assert!(!kernel_fs("/etc/sysctl.d/90-genarch.conf"));
+        assert!(!kernel_fs("/var/lib/genarch/manifest.toml"));
+    }
 }

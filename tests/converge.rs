@@ -280,13 +280,155 @@ fn prune_removes_an_owned_target_that_left_the_intent() {
 
     let intent = case.load();
     let host = case.host();
+    // The derivation lives in `plan`, so the PRUNE verdict and the apply cannot disagree:
+    // it was previously decided inside apply, which let `report` call the host clean while a
+    // stale file (and therefore a second writer) was still on disk.
     let plan = converge::plan(&intent, &host).unwrap();
-    assert!(plan.changes.is_empty(), "prune is decided in apply, not in plan: {plan:?}");
+    assert!(
+        plan.changes
+            .iter()
+            .any(|c| matches!(c, Planned::Prune { live } if live == "/etc/gone.conf")),
+        "plan must see the manifest orphan: {plan:?}"
+    );
 
     let (_, outcome) = converge::apply(&intent, &host, false).unwrap();
     assert!(outcome.pruned.contains(&"/etc/gone.conf".to_string()), "{outcome:?}");
     assert!(!host.exists("/etc/gone.conf"));
     assert!(host.exists("/etc/keep.conf"));
+
+    let manifest = converge::Manifest::load(&host).unwrap();
+    assert!(manifest.owned.contains("/etc/keep.conf"));
+    assert!(!manifest.owned.contains("/etc/gone.conf"));
+}
+
+#[test]
+fn prune_verdict_is_drift_not_a_warning() {
+    // A pending removal is the double-writer the cutover exists to prevent. Reporting it as
+    // WARN kept the exit code at 0, so a host with the shell engine still on disk read green.
+    let case = Case::new("prune-verdict");
+    std::fs::create_dir_all(case.intent()).unwrap();
+    std::fs::write(
+        case.intent().join("intent.toml"),
+        format!(
+            "schema = {SCHEMA_VERSION}\nprune = [\"/usr/local/sbin/eco-power.sh\"]\n"
+        ),
+    )
+    .unwrap();
+    case.write_live("/usr/local/sbin/eco-power.sh", "stale\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let verdicts = genarch::check::evaluate(&genarch::check::Ctx { host: &host, intent: &intent });
+    let prune = verdicts.iter().find(|v| v.id == "PRUNE").unwrap();
+    assert_eq!(prune.class, genarch::check::Class::Drift, "{prune:?}");
+
+    converge::apply(&intent, &host, false).unwrap();
+    let verdicts = genarch::check::evaluate(&genarch::check::Ctx { host: &host, intent: &intent });
+    let prune = verdicts.iter().find(|v| v.id == "PRUNE").unwrap();
+    assert_eq!(prune.class, genarch::check::Class::Ok, "{prune:?}");
+}
+
+#[test]
+fn sysctl_projection_is_owned_and_pruned_when_it_leaves_the_intent() {
+    // The projection is a file the engine writes, so it has to be in the manifest. It was
+    // not: emptying sysctl.toml left /etc/sysctl.d/90-genarch.conf live and unreported, which
+    // is exactly the "two homes for one value" the design exists to kill.
+    let case = Case::new("projection");
+    case.write_intent_meta();
+    std::fs::write(
+        case.intent().join("sysctl.toml"),
+        "[values]\n\"vm.swappiness\" = \"100\"\n",
+    )
+    .unwrap();
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+    assert!(host.exists(converge::RENDERED_SYSCTL_CONF));
+    let manifest = converge::Manifest::load(&host).unwrap();
+    assert!(
+        manifest.owned.contains(converge::RENDERED_SYSCTL_CONF),
+        "{manifest:?}"
+    );
+
+    std::fs::write(case.intent().join("sysctl.toml"), "[values]\n").unwrap();
+    let intent = case.load();
+    let plan = converge::plan(&intent, &host).unwrap();
+    assert!(
+        plan.changes.iter().any(|c| matches!(
+            c,
+            Planned::Prune { live } if live == converge::RENDERED_SYSCTL_CONF
+        )),
+        "{plan:?}"
+    );
+    converge::apply(&intent, &host, false).unwrap();
+    assert!(!host.exists(converge::RENDERED_SYSCTL_CONF));
+}
+
+#[test]
+fn crlf_line_endings_survive_a_patch() {
+    // Rebuilding the file with `lines()` + `join("\n")` turned a CRLF target LF-only: every
+    // other byte is supposed to survive, and the terminator is a byte.
+    let case = Case::new("crlf");
+    case.write_intent_meta();
+    case.write_managed(
+        "app",
+        "name = \"app\"\ntarget = \"/etc/app.conf\"\nmatch = '^key = '\nline = \"key = 2\"\n",
+    );
+    case.write_live("/etc/app.conf", "key = 1\r\nother = x\r\n");
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+    assert_eq!(case.read_live("/etc/app.conf"), "key = 2\r\nother = x\r\n");
+}
+
+#[test]
+fn pre_image_keeps_the_source_mode() {
+    // A pre-image written 0644 restores a 0755 hook as non-executable: systemd runs it and
+    // fails with 203/EXEC, or the sleep hook is silently skipped. The mode is part of the
+    // backup, not decoration.
+    use std::os::unix::fs::PermissionsExt;
+
+    let case = Case::new("pre-image-mode");
+    case.write_intent_meta();
+    case.write_intent_mirror("/usr/lib/systemd/system-sleep/hook", "new\n");
+    case.write_live("/usr/lib/systemd/system-sleep/hook", "old\n");
+    std::fs::set_permissions(
+        case.live().join("usr/lib/systemd/system-sleep/hook"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+
+    let backups = case.backups();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let mode = std::fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755, "pre-image lost the exec bit: {backups:?}");
+}
+
+#[test]
+fn a_refused_pass_write_is_a_failure_not_a_silent_skip() {
+    // `apply_host_state` used `write(..).is_ok()`: a refused sysfs write (or a wrong vintage
+    // of procfs) made the pass exit 0 and say nothing, so the operator saw a green pass and
+    // an unchanged machine.
+    let case = Case::new("pass-write");
+    case.write_intent_meta();
+    std::fs::write(
+        case.intent().join("sysctl.toml"),
+        "[values]\n\"vm.swappiness\" = \"100\"\n",
+    )
+    .unwrap();
+    // A directory where a file must be: every write to it fails, on any filesystem.
+    std::fs::create_dir_all(case.live().join("proc/sys/vm/swappiness")).unwrap();
+
+    let intent = case.load();
+    let host = case.host();
+    let err = genarch::pass::run(&host, &intent, genarch::pass::Pass::Resume).unwrap_err();
+    assert!(err.message.contains("write"), "{}", err.message);
 }
 
 #[test]
@@ -298,7 +440,7 @@ fn lock_conflict_is_a_precondition_failure_naming_the_holder() {
 
     let intent = case.load();
     let host = case.host();
-    let first = converge::Lock::acquire(&host).unwrap();
+    let first = host.lock(converge::LOCK_PATH).unwrap();
     let err = converge::apply(&intent, &host, false).unwrap_err();
     assert_eq!(err.kind, genarch::exit::Exit::Precondition);
     assert!(err.message.contains("lock held by"), "{}", err.message);

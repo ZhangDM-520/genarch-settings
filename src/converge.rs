@@ -18,8 +18,7 @@
 //! - **Drift after apply is exit 1, not silence.** A post-apply re-plan must come back empty.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -53,12 +52,6 @@ pub enum Planned {
     Prune { live: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Skip {
-    pub live: String,
-    pub why: String,
-}
-
 /// A sysctl value the plan wants live, with what is live now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SysctlDrift {
@@ -70,7 +63,6 @@ pub struct SysctlDrift {
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
     pub changes: Vec<Planned>,
-    pub skips: Vec<Skip>,
     /// Hard errors: a target that cannot be classified. Any entry here refuses the apply.
     pub anomalies: Vec<String>,
     pub sysctl: Vec<SysctlDrift>,
@@ -166,6 +158,21 @@ pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
         }
     }
 
+    // Files this engine wrote earlier and no longer ships. The manifest is the ownership
+    // record, so a target that leaves the intent cannot be forgotten on disk. This belongs to
+    // `plan`, not to `apply`: the PRUNE verdict and the apply must act on one derivation.
+    let manifest = Manifest::load(host)?;
+    let owned = owned_targets(intent);
+    for live in manifest.owned.iter() {
+        let already = plan
+            .changes
+            .iter()
+            .any(|c| matches!(c, Planned::Prune { live: l } if l == live));
+        if !owned.contains(live.as_str()) && !already && host.exists(live) {
+            plan.changes.push(Planned::Prune { live: live.clone() });
+        }
+    }
+
     for (key, want) in &intent.sysctl {
         let current = host
             .read_opt(&proc_sys_path(key))
@@ -194,23 +201,7 @@ pub struct Outcome {
 
 /// Converge. Refuses on any anomaly before writing anything.
 pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, Outcome)> {
-    let mut plan = plan(intent, host)?;
-
-    // Owned-but-no-longer-shipped files: recorded by the manifest, absent from intent.
-    let manifest = Manifest::load(host)?;
-    let wanted: BTreeSet<&str> = intent.mirror.iter().map(|m| m.live.as_str()).collect();
-    for owned in manifest.owned.iter() {
-        if wanted.contains(owned.as_str()) {
-            continue;
-        }
-        let already = plan
-            .changes
-            .iter()
-            .any(|c| matches!(c, Planned::Prune { live } if live == owned));
-        if !already {
-            plan.changes.push(Planned::Prune { live: owned.clone() });
-        }
-    }
+    let plan = plan(intent, host)?;
 
     if !plan.anomalies.is_empty() {
         let mut msg = String::from("refusing to apply: intent cannot be classified\n");
@@ -226,7 +217,7 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
         return Ok((plan, outcome));
     }
 
-    let _lock = Lock::acquire(host)?;
+    let _lock = host.lock(LOCK_PATH)?;
 
     // Pre-images for every file that will change, before the first write.
     for change in &plan.changes {
@@ -294,7 +285,7 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
         outcome.reloads.push("udevadm control --reload".into());
     }
 
-    Manifest::save(host, &wanted)?;
+    Manifest::save(host, &owned_targets(intent), &touched_targets(intent))?;
 
     // A converged host re-plans empty. Anything left is drift that survived apply, which is
     // exit 1 — never silence.
@@ -342,21 +333,48 @@ pub fn pre_image(host: &dyn Host, live: &str) -> Result<Option<PathBuf>> {
     if host.exists(&backup) {
         return Ok(Some(PathBuf::from(backup)));
     }
-    let bytes = host.read(live)?;
-    let mode = 0o644;
-    host.write(&backup, bytes.as_bytes(), Some(mode))?;
+    // Bytes, not text: a mirror may be opaque. Mode, not a constant: a 100755 hook restored
+    // from a 100644 backup is silently skipped by systemd (203/EXEC is the good case).
+    let bytes = host.read_bytes(live)?;
+    let mode = host.mode_of(live).unwrap_or(0o644);
+    host.write(&backup, &bytes, Some(mode))?;
     Ok(Some(PathBuf::from(backup)))
+}
+
+/// Live paths this engine authoritatively writes: mirror targets and the sysctl projection.
+///
+/// Only these are prune-eligible. A file the engine merely *patched* (a managed record) stays
+/// owned by its package, so deleting it because the record left the intent would delete the
+/// package's config.
+pub fn owned_targets(intent: &Intent) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = intent.mirror.iter().map(|m| m.live.clone()).collect();
+    if !intent.sysctl.is_empty() {
+        out.insert(RENDERED_SYSCTL_CONF.to_string());
+    }
+    out
+}
+
+/// Live files the engine patches but does not own. Recorded so the manifest can prove which
+/// foreign files it has touched; never pruned.
+pub fn touched_targets(intent: &Intent) -> BTreeSet<String> {
+    intent.managed.iter().map(|r| r.target.clone()).collect()
 }
 
 /// The ownership record: which live files this engine wrote.
 ///
-/// It is what makes "one writer per file" checkable and what lets a target leave the intent
-/// without being forgotten on disk.
+/// `owned` is prune-eligible — a path that leaves the intent and stays in `owned` is removed
+/// on the next apply. `touched` records the foreign files the engine patched through a managed
+/// record: informative only, because deleting them would delete their package's config.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Manifest {
     #[serde(default)]
     pub owned: BTreeSet<String>,
+    #[serde(default)]
+    pub touched: BTreeSet<String>,
 }
+
+/// The apply lock. Owned by the [`Host`] adapter, which is the only module that may take it.
+pub const LOCK_PATH: &str = "/var/lib/genarch/lock";
 
 impl Manifest {
     pub fn live_path() -> &'static str {
@@ -372,63 +390,15 @@ impl Manifest {
         }
     }
 
-    pub fn save(host: &dyn Host, owned: &BTreeSet<&str>) -> Result<()> {
-        let manifest = Manifest { owned: owned.iter().map(|s| s.to_string()).collect() };
+    pub fn save(
+        host: &dyn Host,
+        owned: &BTreeSet<String>,
+        touched: &BTreeSet<String>,
+    ) -> Result<()> {
+        let manifest = Manifest { owned: owned.clone(), touched: touched.clone() };
         let text = toml::to_string(&manifest)
             .map_err(|e| Failure::partial(format!("encode manifest: {e}")))?;
         host.write(Self::live_path(), text.as_bytes(), Some(0o644))
-    }
-}
-
-/// Exclusive apply lock. A second apply reports the holder instead of interleaving writes.
-pub struct Lock {
-    file: std::fs::File,
-    path: PathBuf,
-}
-
-impl Lock {
-    pub fn live_path() -> &'static str {
-        "/var/lib/genarch/lock"
-    }
-
-    pub fn acquire(host: &dyn Host) -> Result<Lock> {
-        let path = host.resolve(Self::live_path());
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Failure::precondition(format!("mkdir {}: {e}", parent.display())))?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| Failure::precondition(format!("open {}: {e}", path.display())))?;
-        let rc = unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&file), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            let mut holder = String::new();
-            let _ = std::io::Read::read_to_string(&mut file, &mut holder);
-            return Err(Failure::precondition(format!(
-                "apply lock held by {} ({})",
-                holder.trim(),
-                path.display()
-            )));
-        }
-        let _ = file.set_len(0);
-        let _ = writeln!(file, "pid={} via=genarch", std::process::id());
-        Ok(Lock { file, path })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        unsafe {
-            libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.file), libc::LOCK_UN);
-        }
     }
 }
 

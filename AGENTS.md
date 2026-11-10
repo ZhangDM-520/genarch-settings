@@ -34,7 +34,12 @@ There is no lint config; `cargo clippy` is ad hoc.
 ## Architecture
 
 1. **`host` is the only seam.** `trait Host` + `RealHost` / `FixtureHost`. No module above it may
-   open a file or spawn a process. A new need goes on the trait.
+   open a file or spawn a process *for live host state* — every read/write of `/etc`, `/sys`,
+   `/proc`, the manifest and the apply lock goes through it, and the lock is `host.lock()` rather
+   than a `flock` call in `converge`. Two deliberate exceptions, both **input data** rather than
+   host state: `intent` reads its own package tree (and `GENARCH_INTENT`'s rehearsal copy), and
+   `import` reads an offline `system-tuning/state` tree; both use `std::fs` directly. A new need
+   on live state still goes on the trait.
 2. **`intent` is the declared state** — typed TOML (`sysctl.toml`, `ryzenadj.toml`, `passes.toml`),
    byte-exact `mirror/` files, and `managed/*.toml` anchored-line records. `/etc/genarch` overrides
    `/usr/lib/genarch` whole-file; nothing merges.
@@ -56,8 +61,16 @@ There is no lint config; `cargo clippy` is ad hoc.
 
 - **One home per fact.** A knob value lives once in the intent; the ledger records why. A rule
   (deployable names, sysctl normalisation, ceiling classes) lives in exactly one function.
-- **Pre-images before every write**, dated, never deleted. `system-sleep/` pre-images go to
-  `<dir>-backups/` because systemd executes every file in that directory.
+- **Pre-images before every write**, dated, never deleted, **byte-exact and mode-preserving**:
+  the copy is `read_bytes` + the source's permission bits. A 0644 copy of a 0755 hook restores a
+  non-executable hook (203/EXEC, or silently skipped in `system-sleep/`).
+- **Kernel attributes are written in place.** `sysfs` and `procfs` cannot host a sibling temp file
+  or a rename, so `/sys` and `/proc` writes bypass the atomic path; everything else is
+  temp + fsync + rename with `O_EXCL|O_NOFOLLOW` on the temp name.
+- **The manifest is the ownership record** (`owned` = prune-eligible, `touched` = foreign files
+  patched and never pruned). The sysctl projection is an engine-written file and therefore lives
+  in `owned`; a target that leaves the intent is pruned from the record, so no value keeps a
+  second home.
 - **The manifest is the ownership record.** A target that leaves the intent is pruned by the
   engine; nothing is deleted on a hunch.
 - **Every live mutation says which pass it belongs to.** SMU writes are boot/resume only; the
@@ -76,4 +89,7 @@ There is no lint config; `cargo clippy` is ad hoc.
 | Mode is preserved on an existing target and taken from the intent for a new one | An exec-bit regression is invisible until a unit fails with 203/EXEC. |
 | `resume` must never sleep | A sleep hook blocks the `user.slice` thaw; measured 5.1 s per resume in the shell era. |
 | The report's `TIMER` row is expected to DRIFT until this package's units are enabled | It is the only row that is red on a fully converged host running the shell engine. |
-| `apply` cannot delete a file it does not own; it prunes only what the manifest lists | That is why unmanaging something is safe, and why a second engine must never own the same path. |
+| `apply` cannot delete a file it does not own; it prunes only what the manifest lists | That is why unmanaging something is safe, and why a second engine must never own the same path. A managed target goes in `touched`, never `owned`: removing the record must not delete the package's file. |
+| `/sys` and `/proc` cannot host a temp file, so kernel attributes are written **in place** | Measured 2026-11-11: `touch /proc/sys/kernel/printk.tmp` → ENOENT, `.tmp` under a policy dir → EACCES, and the uniform temp+rename path made `converge ceil` exit 3 with `scaling_max_freq` unchanged. `kernel_fs()` + `write_in_place()` are the one home; the fixture test simulates a directory that refuses new entries. |
+| A pre-image copies **bytes and the source mode** | A 0644 copy of a 0755 hook restores a non-executable hook (203/EXEC, or silently skipped in `system-sleep/`). `pre_image_keeps_the_source_mode` is the guard; `Host::read_bytes` exists because a mirror may be opaque. |
+| A refused write in a pass is a failure (exit 3), never `.is_ok()` | The `pass` code swallowed sysfs/procfs errors, so a pass exited 0 while the governor/wake/USB/sysctl value never moved. `a_refused_pass_write_is_a_failure_not_a_silent_skip` is the guard. |

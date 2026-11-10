@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::converge::is_deployable_name;
 use crate::exit::{Failure, Result};
-use crate::intent::{CoConfig, LimitsConfig, PassesConfig, RyzenadjConfig, SCHEMA_VERSION};
+use crate::intent::{PassesConfig, RyzenadjConfig, SCHEMA_VERSION};
 
 #[derive(Debug, Default)]
 pub struct Summary {
@@ -289,12 +289,4 @@ fn walk_files(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
-}
-
-// Keep the field list honest if `RyzenadjConfig` grows: the importer is the one place that
-// must know every knob, and the compiler should complain when it stops compiling.
-#[allow(dead_code)]
-fn _type_check(config: RyzenadjConfig) -> CoConfig {
-    let _ = LimitsConfig::default();
-    config.co
 }
