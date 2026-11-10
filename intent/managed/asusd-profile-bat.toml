@@ -1,0 +1,5 @@
+name = "asusd-profile-bat"
+target = "/etc/asusd/asusd.ron"
+match = '^\s*change_platform_profile_on_battery:'
+line = "    change_platform_profile_on_battery: false,"
+doc = "findings#asusd"

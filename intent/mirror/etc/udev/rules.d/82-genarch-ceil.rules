@@ -1,0 +1,4 @@
+# Re-assert the ceiling on power-source events. The cap has been observed overwritten to the
+# hardware maximum by an unidentified event handler; the ceil pass is drift-only and logs the
+# caught value, which is what names the overwriter in the journal.
+ACTION=="change", SUBSYSTEM=="power_supply", TAG+="systemd", ENV{SYSTEMD_WANTS}+="genarch-ceil.service"

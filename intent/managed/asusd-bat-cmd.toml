@@ -1,0 +1,5 @@
+name = "asusd-bat-cmd"
+target = "/etc/asusd/asusd.ron"
+match = '^\s*bat_command:'
+line = '    bat_command: "",'
+doc = "findings#asusd"

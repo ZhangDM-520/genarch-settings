@@ -1,0 +1,2 @@
+# MT7925 internal Bluetooth (13d3:3608) may autosuspend when idle
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="13d3", ATTR{idProduct}=="3608", ATTR{power/control}="auto"

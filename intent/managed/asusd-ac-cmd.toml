@@ -1,0 +1,5 @@
+name = "asusd-ac-cmd"
+target = "/etc/asusd/asusd.ron"
+match = '^\s*ac_command:'
+line = '    ac_command: "",'
+doc = "findings#asusd"

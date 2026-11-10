@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Adopted 2026-11-09 from cachyos-settings (usr/lib/udev/audio-pm-ctl), moved under
+# /usr/local so the behaviour survives the package drop; invoked by 70-eco-audio-pm.rules.
+#
+# snd_hda_intel power_save=0 while on AC (no stream-start latency, so no crackle), and the
+# stashed value restored on battery. Not a new tuning claim: this is the state the host
+# already ran, and the ledger entry is docs/findings.md ## snd-hda-pm.
+declare -r PARAM=/sys/module/snd_hda_intel/parameters/power_save
+declare -r STATE=/run/udev/snd-hda-intel-powersave
+
+save() {
+  local cur
+  cur="$(cat "$PARAM")"
+  [[ "$cur" != 0 ]] && echo "$cur" >"$STATE"
+  return 0
+}
+
+is_on_ac() {
+  local d online
+  while IFS= read -r d; do
+    online="$(cat "${d%type}online" 2>/dev/null)"
+    [[ "$online" == 1 ]] || return 1
+  done < <(grep -l "Mains" /sys/class/power_supply/*/type 2>/dev/null)
+  return 0
+}
+
+do_init() { is_on_ac || return 0; save; echo 0 >"$PARAM"; }
+do_battery() { local v; v="$(cat "$STATE" 2>/dev/null)"; [[ -n "$v" ]] || v=10; echo "$v" >"$PARAM"; }
+do_ac() { save; echo 0 >"$PARAM"; }
+
+case ${1:-} in
+  init) do_init ;;
+  battery) do_battery ;;
+  ac) do_ac ;;
+  *) echo "Usage: $0 {init|battery|ac}" >&2; exit 1 ;;
+esac

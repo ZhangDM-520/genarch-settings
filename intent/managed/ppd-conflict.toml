@@ -1,0 +1,5 @@
+name = "ppd-conflict"
+target = "/usr/lib/systemd/system/power-profiles-daemon.service"
+match = "^Conflicts="
+line = "Conflicts=tuned.service auto-cpufreq.service system76-power.service"
+doc = "findings#epp"

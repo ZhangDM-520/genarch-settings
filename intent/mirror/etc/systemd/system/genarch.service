@@ -1,0 +1,15 @@
+[Unit]
+Description=genarch: boot pass, then converge the host to the intent
+# Ordering: after tlp's boot pass and asusd's startup, so the SMU/EPP work lands after the
+# handlers that reset firmware limits on every platform-profile write.
+After=multi-user.target tlp.service asusd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/genarch converge boot
+# Failure-tolerant: a missing intent or a locked apply must never fail the boot chain.
+ExecStart=-/usr/bin/genarch apply
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

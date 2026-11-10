@@ -1,0 +1,10 @@
+# Adopted 2026-11-09 from cachyos-settings (cachyos-iw-set-regdomain.path).
+[Unit]
+Description=Re-set the wireless regulatory domain when the timezone changes
+
+[Path]
+PathChanged=/etc/localtime
+Unit=eco-wireless-regdom.service
+
+[Install]
+WantedBy=multi-user.target

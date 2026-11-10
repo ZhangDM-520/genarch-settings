@@ -1,0 +1,6 @@
+/target
+/pkg/
+*.pkg.tar.zst
+
+# local action logs and rehearsal artifacts: working notes, never source
+.logs/

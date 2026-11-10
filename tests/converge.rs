@@ -1,0 +1,545 @@
+//! Behavioural gate for converge and the managed line-patch engine.
+//!
+//! Every case here is a lesson the shell engine paid for, restated as a property. The tests
+//! run through [`FixtureHost`] — the same code paths as production, aimed at a scratch tree —
+//! so they describe behaviour rather than implementation.
+
+use std::path::{Path, PathBuf};
+
+use genarch::converge::{self, Planned};
+use genarch::host::{FixtureHost, Host};
+use genarch::intent::{Intent, SCHEMA_VERSION};
+use genarch::managed;
+
+struct Case {
+    dir: PathBuf,
+}
+
+impl Case {
+    fn new(name: &str) -> Case {
+        let dir = std::env::temp_dir().join(format!("genarch-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Case { dir }
+    }
+
+    fn live(&self) -> PathBuf {
+        self.dir.join("live")
+    }
+
+    fn intent(&self) -> PathBuf {
+        self.dir.join("intent")
+    }
+
+    fn host(&self) -> FixtureHost {
+        FixtureHost::new(self.live())
+    }
+
+    fn write_live(&self, live: &str, content: &str) {
+        let path = self.live().join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+    }
+
+    fn write_intent_mirror(&self, live: &str, content: &str) {
+        let path = self.intent().join("mirror").join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+    }
+
+    fn write_managed(&self, name: &str, body: &str) {
+        let dir = self.intent().join("managed");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.toml")), body).unwrap();
+    }
+
+    fn write_intent_meta(&self) {
+        let dir = self.intent();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
+    }
+
+    fn load(&self) -> Intent {
+        Intent::load(&self.intent(), &self.dir.join("no-overlay")).unwrap()
+    }
+
+    fn read_live(&self, live: &str) -> String {
+        std::fs::read_to_string(self.live().join(live.trim_start_matches('/'))).unwrap()
+    }
+
+    fn backups(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![self.live()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(".bak-"))
+                    .unwrap_or(false)
+                {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+}
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn apply_writes_the_target_and_keeps_a_dated_pre_image() {
+    let case = Case::new("pre-image");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/tlp.d/01-eco.conf", "new\n");
+    case.write_live("/etc/tlp.d/01-eco.conf", "old\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let (plan, outcome) = converge::apply(&intent, &host, false).unwrap();
+
+    assert_eq!(plan.changes.len(), 1);
+    assert_eq!(case.read_live("/etc/tlp.d/01-eco.conf"), "new\n");
+    assert_eq!(outcome.backups.len(), 1);
+    let backup = &outcome.backups[0];
+    assert!(backup.to_string_lossy().contains(".bak-"), "{backup:?}");
+    let on_disk = case.live().join(backup.to_string_lossy().trim_start_matches('/'));
+    assert_eq!(std::fs::read_to_string(on_disk).unwrap(), "old\n");
+}
+
+#[test]
+fn a_converged_host_plans_nothing() {
+    let case = Case::new("idempotent");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "same\n");
+    case.write_live("/etc/a.conf", "same\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let (plan, _) = converge::apply(&intent, &host, false).unwrap();
+    assert!(plan.is_empty(), "{plan:?}");
+    let after = converge::plan(&intent, &host).unwrap();
+    assert!(after.is_empty(), "{after:?}");
+}
+
+#[test]
+fn sysctl_multi_value_is_compared_whole() {
+    let case = Case::new("sysctl-multi");
+    case.write_intent_meta();
+    case.write_live("/proc/sys/kernel/printk", "3\t3\t3\t3\n");
+    let intent_dir = case.intent();
+    std::fs::write(intent_dir.join("sysctl.toml"), "[values]\n\"kernel.printk\" = \"3 3 3 3\"\n")
+        .unwrap();
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    // The tab-rendered live value and the space-written intent are the same value: capturing
+    // only the first token made this re-assert forever and every apply exited 1.
+    assert!(plan.sysctl.is_empty(), "{:?}", plan.sysctl);
+
+    // A genuinely different value still shows up, whole.
+    std::fs::write(intent_dir.join("sysctl.toml"), "[values]\n\"kernel.printk\" = \"4 4 4 4\"\n")
+        .unwrap();
+    let intent = case.load();
+    let plan = converge::plan(&intent, &host).unwrap();
+    assert_eq!(plan.sysctl.len(), 1);
+    assert_eq!(plan.sysctl[0].want, "4 4 4 4");
+}
+
+#[test]
+fn managed_patch_preserves_every_unclaimed_byte() {
+    let case = Case::new("managed-bytes");
+    case.write_intent_meta();
+    let before = "[Journal]\nStorage=persistent\nSystemMaxUse=32M\nMaxFileSize=8M\n";
+    case.write_live("/etc/systemd/journald.conf", before);
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/systemd/journald.conf\"\nmatch = '^#?[[:space:]]*SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+
+    let after = case.read_live("/etc/systemd/journald.conf");
+    assert_eq!(
+        after,
+        "[Journal]\nStorage=persistent\nSystemMaxUse=256M\nMaxFileSize=8M\n"
+    );
+    // Line count is preserved: the patch replaces a line, it does not append one.
+    assert_eq!(before.lines().count(), after.lines().count());
+}
+
+#[test]
+fn managed_zero_match_refuses_and_writes_nothing() {
+    let case = Case::new("managed-nomatch");
+    case.write_intent_meta();
+    let before = "[Journal]\nStorage=persistent\n";
+    case.write_live("/etc/systemd/journald.conf", before);
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/systemd/journald.conf\"\nmatch = '^SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert_eq!(err.kind, genarch::exit::Exit::Partial);
+    assert!(err.message.contains("0 lines match"), "{}", err.message);
+    assert_eq!(case.read_live("/etc/systemd/journald.conf"), before);
+    assert!(case.backups().is_empty(), "nothing may be written, not even a pre-image");
+}
+
+#[test]
+fn managed_multi_match_refuses_to_choose() {
+    let case = Case::new("managed-multi");
+    case.write_intent_meta();
+    let before = "SystemMaxUse=32M\nSystemMaxUse=64M\n";
+    case.write_live("/etc/systemd/journald.conf", before);
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/systemd/journald.conf\"\nmatch = '^SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert!(err.message.contains("refusing to choose"), "{}", err.message);
+    assert_eq!(case.read_live("/etc/systemd/journald.conf"), before);
+}
+
+#[test]
+fn managed_section_scoping_ignores_a_lookalike_section() {
+    let case = Case::new("managed-section");
+    case.write_intent_meta();
+    let before = "[Other]\nKey=wrong\n[Journal]\nKey=right\n[JournalFoo]\nKey=also-wrong\n";
+    case.write_live("/etc/x.conf", before);
+    case.write_managed(
+        "journal",
+        "name = \"journal\"\ntarget = \"/etc/x.conf\"\nsection = \"Journal\"\nmatch = '^Key='\nline = \"Key=patched\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+    assert_eq!(
+        case.read_live("/etc/x.conf"),
+        "[Other]\nKey=wrong\n[Journal]\nKey=patched\n[JournalFoo]\nKey=also-wrong\n"
+    );
+}
+
+#[test]
+fn system_sleep_pre_image_goes_to_a_sibling_directory() {
+    let case = Case::new("sleep-backup");
+    case.write_intent_meta();
+    case.write_intent_mirror("/usr/lib/systemd/system-sleep/genarch", "#!/bin/sh\nexit 0\n");
+    case.write_live("/usr/lib/systemd/system-sleep/genarch", "#!/bin/sh\nexit 1\n");
+
+    let intent = case.load();
+    let host = case.host();
+    converge::apply(&intent, &host, false).unwrap();
+
+    // systemd executes EVERY file in that directory: a sibling `.bak` would run on resume.
+    let dir = case.live().join("usr/lib/systemd");
+    assert!(
+        dir.join("system-sleep-backups/genarch.bak-" .to_string() + &genarch::clock::today()).exists(),
+        "pre-image must live in system-sleep-backups/"
+    );
+    let siblings: Vec<_> = std::fs::read_dir(dir.join("system-sleep"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".bak"))
+        .collect();
+    assert!(siblings.is_empty(), "no .bak may sit next to a sleep hook: {siblings:?}");
+}
+
+#[test]
+fn prune_removes_an_owned_target_that_left_the_intent() {
+    let case = Case::new("prune");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/keep.conf", "keep\n");
+    case.write_live("/etc/keep.conf", "keep\n");
+    case.write_live("/etc/gone.conf", "stale\n");
+    // The manifest is the ownership record: this engine wrote /etc/gone.conf earlier.
+    case.write_live(
+        converge::Manifest::live_path(),
+        "owned = [\"/etc/keep.conf\", \"/etc/gone.conf\"]\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    assert!(plan.changes.is_empty(), "prune is decided in apply, not in plan: {plan:?}");
+
+    let (_, outcome) = converge::apply(&intent, &host, false).unwrap();
+    assert!(outcome.pruned.contains(&"/etc/gone.conf".to_string()), "{outcome:?}");
+    assert!(!host.exists("/etc/gone.conf"));
+    assert!(host.exists("/etc/keep.conf"));
+}
+
+#[test]
+fn lock_conflict_is_a_precondition_failure_naming_the_holder() {
+    let case = Case::new("lock");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "new\n");
+    case.write_live("/etc/a.conf", "old\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let first = converge::Lock::acquire(&host).unwrap();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert_eq!(err.kind, genarch::exit::Exit::Precondition);
+    assert!(err.message.contains("lock held by"), "{}", err.message);
+    drop(first);
+    converge::apply(&intent, &host, false).unwrap();
+}
+
+#[test]
+fn non_deployable_names_never_deploy() {
+    let case = Case::new("stray");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/real.conf", "real\n");
+    case.write_intent_mirror("/etc/real.conf.bak-20260101", "stray\n");
+
+    // The loader refuses a mirror that holds a backup name outright: deploying it would be a
+    // silent overwrite of a pre-image, and in system-sleep/ it would execute. One home for the
+    // rule, and it fails before a plan exists.
+    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
+    assert!(err.message.contains("non-deployable"), "{}", err.message);
+}
+
+#[test]
+fn dry_run_writes_nothing_but_reports_the_plan() {
+    let case = Case::new("dry-run");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "new\n");
+    case.write_live("/etc/a.conf", "old\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let (plan, outcome) = converge::apply(&intent, &host, true).unwrap();
+    assert_eq!(plan.changes.len(), 1);
+    assert!(outcome.applied.is_empty());
+    assert_eq!(case.read_live("/etc/a.conf"), "old\n");
+    assert!(host.recorded_writes().is_empty());
+    assert!(!host.exists(converge::Manifest::live_path()));
+}
+
+#[test]
+fn managed_record_with_a_bad_pattern_fails_before_any_write() {
+    let case = Case::new("bad-pattern");
+    case.write_intent_meta();
+    case.write_live("/etc/x.conf", "a\n");
+    case.write_managed(
+        "broken",
+        "name = \"broken\"\ntarget = \"/etc/x.conf\"\nmatch = '(unclosed'\nline = \"a\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert!(err.message.contains("bad anchor pattern"), "{}", err.message);
+}
+
+#[test]
+fn is_deployable_name_matches_the_paid_for_list() {
+    for bad in [
+        "x.bak",
+        "x.bak-20260101",
+        "x~",
+        "x.orig",
+        "x.rej",
+        "x.swp",
+        ".#x",
+        "x.tmp",
+    ] {
+        assert!(!converge::is_deployable_name(bad), "{bad} must not deploy");
+    }
+    for good in ["x.conf", "eco-power", "hw-tune.fish", "10-eco.conf"] {
+        assert!(converge::is_deployable_name(good), "{good} must deploy");
+    }
+}
+
+#[test]
+fn planned_variants_are_reachable_from_the_plan() {
+    let case = Case::new("planned");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "new\n");
+    case.write_live("/etc/a.conf", "old\n");
+    case.write_live("/etc/m.conf", "SystemMaxUse=32M\n");
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/m.conf\"\nmatch = '^SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    assert!(plan.changes.iter().any(|c| matches!(c, Planned::Owned { .. })));
+    assert!(plan.changes.iter().any(|c| matches!(c, Planned::Managed { .. })));
+}
+
+#[test]
+fn probe_reports_the_three_terminal_states() {
+    let case = Case::new("probe");
+    case.write_live("/etc/p.conf", "Key=old\n");
+    let record = genarch::intent::ManagedRecord {
+        name: "p".into(),
+        target: "/etc/p.conf".into(),
+        match_expr: "^Key=".into(),
+        line: "Key=new".into(),
+        section: None,
+        doc: None,
+    };
+    let host = case.host();
+    assert_eq!(managed::probe(&host, &record).unwrap().state, managed::State::Differs {
+        current: "Key=old".into()
+    });
+    managed::replace(&host, &record).unwrap();
+    assert_eq!(managed::probe(&host, &record).unwrap().state, managed::State::Ok);
+
+    let missing = genarch::intent::ManagedRecord {
+        target: "/etc/absent.conf".into(),
+        ..record
+    };
+    assert_eq!(
+        managed::probe(&host, &missing).unwrap().state,
+        managed::State::MissingTarget
+    );
+}
+
+/// The migration property: the intent derived from the shell tree must reproduce it exactly.
+/// This is the gate that makes the cutover safe, so it runs against the real tree when it is
+/// present on this machine.
+#[test]
+fn import_round_trip_reproduces_the_shell_state_tree() {
+    let state = Path::new("/home/<user>/Projects/system-tuning/state");
+    if !state.join("owned").is_dir() {
+        eprintln!("skipping: no shell state tree at {}", state.display());
+        return;
+    }
+    let case = Case::new("import-roundtrip");
+    let out = case.dir.join("imported");
+    let summary = genarch::import::run(state, &out).unwrap();
+    assert!(summary.mirror > 40, "expected the whole owned set, got {}", summary.mirror);
+
+    let owned = state.join("owned");
+    let mut checked = 0;
+    for entry in walk(&owned) {
+        let rel = entry.strip_prefix(&owned).unwrap();
+        let live = format!("/{}", rel.display());
+        let base = live.rsplit('/').next().unwrap();
+        if !converge::is_deployable_name(base) {
+            continue;
+        }
+        let imported = out.join("mirror").join(rel);
+        let want = std::fs::read(&entry).unwrap();
+        let got = std::fs::read(&imported).unwrap_or_else(|e| {
+            panic!("import lost {}: {e}", entry.display());
+        });
+        assert_eq!(want, got, "byte mismatch for {live}");
+        checked += 1;
+    }
+    assert!(checked > 40, "checked only {checked} files");
+
+    // The intent must load, and loading must see the same bytes.
+    let intent = Intent::load(&out, &case.dir.join("no-overlay")).unwrap();
+    assert_eq!(intent.mirror.len(), checked);
+    assert_eq!(intent.managed.len(), 8, "eight managed records in the shell tree");
+    assert!(intent.sysctl.len() >= 8, "sysctl values collapsed from sysctl.d");
+    assert_eq!(intent.ryzenadj.co.all, -7);
+    assert_eq!(intent.ryzenadj.co.per_core, vec![-24, -24, -21, -21, -9, -11, -8, -6]);
+    assert_eq!(intent.ryzenadj.limits.fast, Some(31000));
+    assert!(intent.ryzenadj.limits.power_saving);
+    // hw-tune's queue has nothing the knobs do not model, so the escape hatch must stay empty:
+    // a non-empty raw list here would mean the fish script's shell syntax leaked into argv.
+    assert!(
+        intent.ryzenadj.raw.is_empty(),
+        "unexpected raw args carried from hw-tune.fish: {:?}",
+        intent.ryzenadj.raw
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn declared_prune_removes_a_path_that_should_not_exist() {
+    let case = Case::new("declared-prune");
+    std::fs::create_dir_all(case.intent()).unwrap();
+    std::fs::write(
+        case.intent().join("intent.toml"),
+        format!("schema = {SCHEMA_VERSION}\nprune = [\"/etc/eco-legacy.conf\"]\n"),
+    )
+    .unwrap();
+    case.write_live("/etc/eco-legacy.conf", "legacy\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    assert_eq!(plan.changes.len(), 1);
+    assert!(matches!(plan.changes[0], Planned::Prune { .. }));
+
+    converge::apply(&intent, &host, false).unwrap();
+    assert!(!host.exists("/etc/eco-legacy.conf"));
+    // Idempotent: the second plan has nothing to remove.
+    assert!(converge::plan(&intent, &host).unwrap().is_empty());
+}
+
+#[test]
+fn sysctl_table_is_projected_into_one_file() {
+    let case = Case::new("sysctl-projection");
+    std::fs::create_dir_all(case.intent()).unwrap();
+    std::fs::write(case.intent().join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
+    std::fs::write(
+        case.intent().join("sysctl.toml"),
+        "[values]\n\"vm.swappiness\" = \"150\"\n\"kernel.sysrq\" = \"190\"\n",
+    )
+    .unwrap();
+    case.write_live("/proc/sys/vm/swappiness", "150\n");
+    case.write_live("/proc/sys/kernel/sysrq", "190\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    // Runtime values already match, but the projection file is missing: that alone is a change.
+    assert_eq!(plan.changes.len(), 1, "{plan:?}");
+    converge::apply(&intent, &host, false).unwrap();
+
+    let rendered = case.read_live(converge::RENDERED_SYSCTL_CONF);
+    assert!(rendered.starts_with("# Generated by genarch"), "{rendered}");
+    assert!(rendered.contains("kernel.sysrq = 190"), "{rendered}");
+    assert!(rendered.contains("vm.swappiness = 150"), "{rendered}");
+    // Sorted: the file must not churn between applies.
+    let sysrq = rendered.find("kernel.sysrq").unwrap();
+    let swappiness = rendered.find("vm.swappiness").unwrap();
+    assert!(sysrq < swappiness, "keys are not sorted: {rendered}");
+    assert!(converge::plan(&intent, &host).unwrap().is_empty());
+}

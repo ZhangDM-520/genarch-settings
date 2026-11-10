@@ -1,0 +1,22 @@
+# genarch intent. The one home for what this host should look like.
+#
+# `prune` is declared, not inferred: at cutover the engine's manifest is empty (it has never
+# applied here), so "what must disappear" has to be reviewable somewhere. Every path below was
+# owned by the shell engine and is replaced by a genarch equivalent — leaving any of them in
+# place would mean two engines converge the same host.
+schema = 2
+prune = [
+  "/etc/systemd/system/eco-power.service",
+  "/etc/systemd/system/eco-ceil.service",
+  "/etc/systemd/system/eco-ceil.timer",
+  "/etc/udev/rules.d/82-eco-ceil.rules",
+  "/usr/lib/systemd/system-sleep/eco-power",
+  "/usr/local/sbin/eco-power.sh",
+  "/usr/local/lib/eco-ceil.sh",
+  "/home/<user>/.reserve/hw-tune.fish",
+  "/etc/sysctl.d/10-eco-kernel-base.conf",
+  "/etc/sysctl.d/95-zram-swappiness.conf",
+  "/etc/sysctl.d/97-sysrq.conf",
+  "/etc/sysctl.d/98-hung-task-panic.conf",
+  "/etc/sysctl.d/99-eco-writeback.conf",
+]

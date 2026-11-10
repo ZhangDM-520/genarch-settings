@@ -1,0 +1,5 @@
+name = "asusd-epp"
+target = "/etc/asusd/asusd.ron"
+match = '^\s*platform_profile_linked_epp:'
+line = "    platform_profile_linked_epp: false,"
+doc = "findings#asusd"

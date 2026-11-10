@@ -1,0 +1,17 @@
+# Converged by eco from state/owned (system-tuning repo). Ledger: docs/findings.md ## io-stack
+# (settled 2026-09, refusals recorded there: nr_requests 256, read_ahead_kb 2048,
+# wbt 0/1000/10000). Vendor /usr/lib/udev/rules.d/60-ioschedulers.rules pins NVMe to kyber;
+# the pre-reinstall host overrode it with a foreign /etc/.../60-ioschedulers.rules that died at
+# the 2026-10-05 reinstall (drift found 2026-10-05). This owned file is the durable replacement.
+# Named 61- so the vendor's sda/mmcblk rules stay live; later rules win over earlier ones for
+# the same attribute. Since 2026-11-09 that vendor file is cachyos-settings', which is being
+# removed (docs/findings.md ## vendor-settings): the sda/mmcblk rules then disappear with it,
+# and nothing here needs them (no SATA disk, no eMMC).
+# Why `none`: race-to-idle — IO bursts drain immediately so the APST timer can start.
+# Order matters: switching elevators resets the queue depth, so scheduler is set on its own
+# line before nr_requests.
+# Check: cat /sys/block/nvme0n1/queue/{scheduler,nr_requests,read_ahead_kb,wbt_lat_usec}
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="1023"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/read_ahead_kb}="256"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/wbt_lat_usec}="2000"

@@ -1,0 +1,5 @@
+name = "asusd-profile-ac"
+target = "/etc/asusd/asusd.ron"
+match = '^\s*change_platform_profile_on_ac:'
+line = "    change_platform_profile_on_ac: false,"
+doc = "findings#asusd"

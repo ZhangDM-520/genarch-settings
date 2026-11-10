@@ -1,0 +1,5 @@
+name = "journald"
+target = "/etc/systemd/journald.conf"
+match = "^#?[[:space:]]*SystemMaxUse="
+line = "SystemMaxUse=256M"
+doc = "findings#journald"

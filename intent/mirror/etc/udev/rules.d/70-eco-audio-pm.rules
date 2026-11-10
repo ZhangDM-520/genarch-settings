@@ -1,0 +1,12 @@
+# Adopted 2026-11-09 from cachyos-settings (usr/lib/udev/rules.d/20-audio-pm.rules).
+# 70- (not 20-) because the helper now lives at /usr/local/lib/audio-pm-ctl, which only
+# exists once this repo's state has been converged; ordering against other rules is
+# irrelevant, but a distinct name keeps the vendor rule from ever shadowing it.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", DRIVERS=="snd_hda_intel", TEST!="/run/udev/snd-hda-intel-powersave", \
+    RUN+="/usr/local/lib/audio-pm-ctl init"
+
+ACTION=="add|change", SUBSYSTEM=="power_supply", ENV{POWER_SUPPLY_TYPE}=="Mains", ENV{POWER_SUPPLY_ONLINE}=="0", TEST=="/sys/module/snd_hda_intel", \
+    RUN+="/usr/local/lib/audio-pm-ctl battery"
+
+ACTION=="add|change", SUBSYSTEM=="power_supply", ENV{POWER_SUPPLY_TYPE}=="Mains", ENV{POWER_SUPPLY_ONLINE}=="1", TEST=="/sys/module/snd_hda_intel", \
+    RUN+="/usr/local/lib/audio-pm-ctl ac"

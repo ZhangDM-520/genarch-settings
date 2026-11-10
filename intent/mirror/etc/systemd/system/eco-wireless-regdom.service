@@ -1,0 +1,14 @@
+# Adopted 2026-11-09 from cachyos-settings (cachyos-iw-set-regdomain.service).
+# Renamed into the eco namespace; the helper moved to /usr/local/lib. WantedBy so the
+# domain is set at every boot as well as on a timezone change (the vendor unit depended on
+# its .path sibling catching a /etc/localtime write, which is not guaranteed at boot).
+[Unit]
+Description=Set the wireless regulatory domain from the timezone
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/iw-set-regdomain
+
+[Install]
+WantedBy=multi-user.target
