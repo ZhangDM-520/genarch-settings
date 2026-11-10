@@ -71,14 +71,16 @@ Rollback point: every removed path has a dated pre-image beside it (`<path>.bak-
 
 Leaving `state/` in place is not harmless: `eco-power.service`'s `ExecStart` points at
 `$ECO_HOME/eco apply`, and any `eco apply` (a human, or a stale timer) restores every eco-* file
-and re-arms the double writer.
+and re-arms the double writer. The retirement is therefore a **marker plus a guard**, not a
+deletion: the shell tree stays as the rollback artifact and parity reference, and `eco` refuses a
+real apply while the marker exists.
 
 ```sh
 cd ~/Projects/system-tuning
-git tag genarch-cutover-shell-retired
-git rm -r eco lib state tests/fixtures tests/stubs     # the engine and its intent tree
-# keep: docs/ benchmarks/ CONTEXT.md AGENTS.md
-./tests/run                                            # the docs gate must still be green
+git tag genarch-cutover-shell-retired            # points at the last pre-retirement commit
+# state/RETIRED.md is the marker (landed 2026-11-10 with `eco`'s `refuse_retired_apply`, which
+# reads it through ECO_STATE); it must be committed for the guard to survive a fresh checkout.
+./tests/run                                      # gate case30 pins the refusal; all green
 ```
 
 ## 6. Reboot and a suspend/resume cycle
@@ -100,6 +102,7 @@ sleep" → "Successfully thawed" delta stays short (single pass, no sleep).
 
 ```sh
 cd ~/Projects/system-tuning && git checkout genarch-cutover-shell-retired -- eco lib state tests
+rm -f state/RETIRED.md                     # the marker must go, or `eco apply` refuses (exit 2)
 sudo systemctl disable --now genarch.service genarch-ceil.timer
 sudo systemctl enable eco-power.service eco-ceil.timer
 sudo rm -f /usr/lib/systemd/system-sleep/genarch
