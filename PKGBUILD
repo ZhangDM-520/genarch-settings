@@ -1,6 +1,6 @@
 # Maintainer: the host owner
 pkgname=genarch
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Native tuning engine: declared intent, read-only judge, converge pass, ryzenadj settings"
 arch=('x86_64')
