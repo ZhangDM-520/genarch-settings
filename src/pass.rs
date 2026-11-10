@@ -42,6 +42,19 @@ impl Report {
 
 pub fn run(host: &dyn Host, intent: &Intent, pass: Pass) -> Result<Report> {
     let mut report = Report::default();
+    // One writer at a time. A scheduled pass (the 2-minute ceil timer, the boot/resume hooks)
+    // and an operator's `apply` both write kernel attributes; without the lock they interleave
+    // and the last writer wins silently. A held lock means an apply is converging the same
+    // knobs, so the pass stands down — and says so, because a silent skip is the failure this
+    // engine exists to end. The timer runs again in two minutes.
+    let _lock = match host.lock(crate::converge::LOCK_PATH) {
+        Ok(lock) => lock,
+        Err(e) if e.kind == crate::exit::Exit::Precondition => {
+            report.say(format!("{pass:?} pass skipped: {}", e.message));
+            return Ok(report);
+        }
+        Err(e) => return Err(e),
+    };
     match pass {
         Pass::Ceil => apply_ceil(host, &mut report)?,
         Pass::Resume => {

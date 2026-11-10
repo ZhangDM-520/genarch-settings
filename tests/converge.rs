@@ -685,3 +685,59 @@ fn sysctl_table_is_projected_into_one_file() {
     assert!(sysrq < swappiness, "keys are not sorted: {rendered}");
     assert!(converge::plan(&intent, &host).unwrap().is_empty());
 }
+
+#[test]
+fn a_path_cannot_be_declared_by_two_owners() {
+    // mirror + prune on one path made apply write the file and immediately delete it: drift
+    // that never converges. mirror + managed fought over the same bytes.
+    let case = Case::new("one-owner");
+    std::fs::create_dir_all(case.intent()).unwrap();
+    std::fs::write(
+        case.intent().join("intent.toml"),
+        format!("schema = {SCHEMA_VERSION}\nprune = [\"/etc/dup.conf\"]\n"),
+    )
+    .unwrap();
+    case.write_intent_mirror("/etc/dup.conf", "x\n");
+
+    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
+    assert!(err.message.contains("one path, one owner"), "{}", err.message);
+
+    std::fs::write(
+        case.intent().join("intent.toml"),
+        format!("schema = {SCHEMA_VERSION}\n"),
+    )
+    .unwrap();
+    case.write_managed(
+        "dup",
+        "name = \"dup\"\ntarget = \"/etc/dup.conf\"\nmatch = '^k = '\nline = \"k = 1\"\n",
+    );
+    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
+    assert!(err.message.contains("one path, one owner"), "{}", err.message);
+}
+
+#[test]
+fn a_pass_stands_down_while_an_apply_holds_the_lock() {
+    // The 2-minute ceil timer and an operator's apply both write kernel attributes. Without a
+    // lock the last writer wins silently; with it, the pass says it skipped instead.
+    let case = Case::new("pass-lock");
+    case.write_intent_meta();
+
+    let intent = case.load();
+    let host = case.host();
+    let held = host.lock(converge::LOCK_PATH).unwrap();
+
+    let report = genarch::pass::run(&host, &intent, genarch::pass::Pass::Ceil).unwrap();
+    assert!(
+        report.lines.iter().any(|line| line.contains("pass skipped")),
+        "{:?}",
+        report.lines
+    );
+
+    drop(held);
+    let report = genarch::pass::run(&host, &intent, genarch::pass::Pass::Ceil).unwrap();
+    assert!(
+        !report.lines.iter().any(|line| line.contains("pass skipped")),
+        "{:?}",
+        report.lines
+    );
+}

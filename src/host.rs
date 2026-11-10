@@ -20,7 +20,7 @@
 //!   a unit fails with 203/EXEC).
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,18 +38,21 @@ fn kernel_fs(live: &str) -> bool {
     live.starts_with("/sys/") || live.starts_with("/proc/")
 }
 
-/// Write to an existing kernel attribute. No temp file, no chmod, no mkdir: the open itself
-/// is the write permission on `sysfs`, and the file is already there.
-fn write_in_place(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
-    file.write_all(bytes)
-        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
-    file.flush()
-        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))
+/// `systemd-sleep` executes every file in this directory, whatever its name.
+const SYSTEM_SLEEP_DIR: &str = "/usr/lib/systemd/system-sleep";
+
+/// Where a `system-sleep` write is staged, so an interrupted apply cannot leave an executable
+/// temp the wake hook would run.
+const SYSTEM_SLEEP_BACKUPS_DIR: &str = "/usr/lib/systemd/system-sleep-backups";
+
+/// Staging directory for a live path, when it must not be the target's own parent.
+/// One home for the rule: `system-sleep/` is executed wholesale, so nothing transient may sit
+/// in it; every other target stages beside itself and stays atomic.
+fn staging_live(live: &str) -> Option<&'static str> {
+    match live.rsplit_once('/') {
+        Some((dir, _)) if dir == SYSTEM_SLEEP_DIR => Some(SYSTEM_SLEEP_BACKUPS_DIR),
+        _ => None,
+    }
 }
 
 /// Create the sibling temp file with `O_EXCL|O_NOFOLLOW`. A stale temp from a killed run
@@ -209,6 +212,35 @@ impl RealHost {
             _ => RealHost::new(),
         }
     }
+
+    /// Write a kernel attribute. No temp file, no chmod, no mkdir: the open is the write
+    /// permission on `sysfs`, and the file is already there.
+    ///
+    /// **One `write(2)`, never `write_all`.** A `sysfs` attribute's `store()` is invoked once
+    /// per write syscall and is not a stream: a short write followed by the remainder would be
+    /// interpreted as a second, unrelated value (EINVAL, or a malformed setting).
+    fn write_kernel(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true);
+        // A rehearsal root is a normal filesystem, where a shorter rewrite must not leave the
+        // tail of the old value behind. Real `/sys` and `/proc` reject O_TRUNC.
+        if self.root != Path::new("/") {
+            open.truncate(true);
+        }
+        let mut file = open
+            .open(path)
+            .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
+        match file.write(bytes) {
+            Ok(n) if n == bytes.len() => Ok(()),
+            Ok(n) => Err(Failure::partial(format!(
+                "write {}: short kernel write, {n} of {} bytes",
+                path.display(),
+                bytes.len()
+            ))),
+            Err(e) => Err(Failure::partial(format!("write {}: {e}", path.display()))),
+        }
+    }
 }
 
 impl Default for RealHost {
@@ -256,15 +288,43 @@ impl Host for RealHost {
     fn write(&self, live: &str, bytes: &[u8], mode: Option<u32>) -> Result<()> {
         let path = self.try_resolve(live)?;
         if kernel_fs(live) {
-            return write_in_place(&path, bytes);
+            return self.write_kernel(&path, bytes);
         }
-        let existing_mode = std::fs::metadata(&path).ok().map(|m| m.permissions().mode());
+        let existing = std::fs::metadata(&path).ok();
+        let existing_mode = existing.as_ref().map(|m| m.permissions().mode());
+        // A new target inherits the owner of the directory it lands in: the engine's mirrors
+        // include files under a user's home, and a root-created file there is unusable to its
+        // owner even after the content is right.
+        let owner = existing
+            .as_ref()
+            .map(|m| (m.uid(), m.gid()))
+            .or_else(|| {
+                path.parent()
+                    .and_then(|parent| std::fs::metadata(parent).ok())
+                    .map(|m| (m.uid(), m.gid()))
+            });
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Failure::partial(format!("mkdir {}: {e}", parent.display())))?;
         }
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("genarch");
-        let tmp = path.with_extension(format!("{extension}.{}.tmp", std::process::id()));
+        // systemd-sleep executes every file in `system-sleep/`, whatever its name — including a
+        // temp left by an interrupted apply. Stage those writes in the sibling backups
+        // directory instead (same filesystem, so the rename stays atomic).
+        let staging = match staging_live(live) {
+            Some(dir) => {
+                let dir = self.try_resolve(dir)?;
+                std::fs::create_dir_all(&dir).map_err(|e| {
+                    Failure::partial(format!("mkdir {}: {e}", dir.display()))
+                })?;
+                dir
+            }
+            None => path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.root.clone()),
+        };
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("genarch");
+        let tmp = staging.join(format!(".{name}.{}.tmp", std::process::id()));
         // `create_new` + `O_NOFOLLOW`: the temp path must not be a pre-planted symlink. Apply
         // runs as root and writes into user-owned trees, so a symlink at a predictable name
         // would redirect a root write.
@@ -272,15 +332,39 @@ impl Host for RealHost {
         use std::io::Write;
         file.write_all(bytes)
             .map_err(|e| Failure::partial(format!("write {}: {e}", tmp.display())))?;
+        // Mode and ownership are set on the descriptor, never on the path: a path-based chmod
+        // after close follows a symlink planted in a user-writable directory (an unprivileged
+        // actor could turn it into `chown root /etc/shadow`).
+        if let Some(m) = existing_mode.or(mode) {
+            let rc = unsafe { libc::fchmod(file.as_raw_fd(), m) };
+            if rc != 0 {
+                return Err(Failure::partial(format!(
+                    "chmod {}: {}",
+                    tmp.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
+        if let Some((uid, gid)) = owner {
+            let rc = unsafe { libc::fchown(file.as_raw_fd(), uid, gid) };
+            // A root run must preserve ownership or fail: silently leaving a root-owned file in
+            // a user's home strips that user's ability to edit it (measured live: two
+            // `~/.config/autostart` entries were root-owned after the cutover apply). An
+            // unprivileged run can only chown to itself, which is already the case.
+            if rc != 0 && unsafe { libc::geteuid() } == 0 {
+                return Err(Failure::partial(format!(
+                    "chown {}:{} {}: {}",
+                    uid,
+                    gid,
+                    tmp.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
         // The rename is only atomic if the data is on disk before it happens.
         file.sync_all()
             .map_err(|e| Failure::partial(format!("fsync {}: {e}", tmp.display())))?;
         drop(file);
-        let effective = existing_mode.or(mode);
-        if let Some(m) = effective {
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(m))
-                .map_err(|e| Failure::partial(format!("chmod {}: {e}", tmp.display())))?;
-        }
         std::fs::rename(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             Failure::partial(format!("rename {}: {e}", path.display()))
@@ -587,6 +671,112 @@ mod tests {
             .filter(|p| p != &target)
             .collect();
         assert!(leftovers.is_empty(), "atomic write left a temp file: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rehearsal_kernel_write_truncates_the_previous_value() {
+        // On a real kernel filesystem O_TRUNC is refused and irrelevant; on a GENARCH_ROOT
+        // rehearsal it is a normal file, where a shorter value must not leave the old tail.
+        let dir = scratch("rehearsal");
+        let live = "/proc/sys/vm/swappiness";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "150\n").unwrap();
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"10", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "10");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sleep_hook_writes_are_staged_outside_the_executed_directory() {
+        // systemd-sleep runs every file in that directory, whatever its name. A temp left by a
+        // crash between chmod and rename would execute on the next resume.
+        assert_eq!(
+            staging_live("/usr/lib/systemd/system-sleep/genarch"),
+            Some("/usr/lib/systemd/system-sleep-backups")
+        );
+        assert_eq!(staging_live("/usr/lib/systemd/system-sleep/nested/x"), None);
+        assert_eq!(staging_live("/etc/tlp.d/01-eco.conf"), None);
+
+        let dir = scratch("sleep-stage");
+        let live = "/usr/lib/systemd/system-sleep/genarch";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"#!/bin/sh\ntrue\n", Some(0o755)).unwrap();
+
+        let written: Vec<PathBuf> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(written, vec![target.clone()], "only the hook may live in system-sleep/");
+        let staged = dir.join("usr/lib/systemd/system-sleep-backups");
+        assert!(staged.is_dir(), "staging directory must be created");
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(&staged).unwrap().flatten().map(|e| e.path()).collect();
+        assert!(leftovers.is_empty(), "temp was not renamed away: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ownership_is_preserved_for_an_existing_target() {
+        // Root-written files in a user tree became root-owned (measured live: two
+        // ~/.config/autostart entries after the cutover apply). As root the temp is created
+        // 0:0, so the owner has to be carried over explicitly. This test needs root to be
+        // meaningful; unprivileged, the file is already ours and the assertion is a no-op.
+        let dir = scratch("owner");
+        let live = "/home/someone/.config/autostart/app.desktop";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "old\n").unwrap();
+        let owner = (1000, 1000);
+        if unsafe { libc::geteuid() } == 0 {
+            let rc = unsafe {
+                libc::chown(
+                    std::ffi::CString::new(target.to_str().unwrap()).unwrap().as_ptr(),
+                    owner.0,
+                    owner.1,
+                )
+            };
+            assert_eq!(rc, 0);
+        }
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"new\n", Some(0o644)).unwrap();
+
+        let meta = std::fs::metadata(&target).unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            assert_eq!((meta.uid(), meta.gid()), owner, "root write reset the file owner");
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_target_inherits_the_directory_owner() {
+        // The engine mirrors files under a user's home; a root-created file there must be
+        // usable by that user. Root-only observation, like the preservation test above.
+        let dir = scratch("new-owner");
+        let live = "/home/someone/.config/app/new.conf";
+        let parent = dir.join("home/someone/.config/app");
+        std::fs::create_dir_all(&parent).unwrap();
+        let owner = (1000, 1000);
+        if unsafe { libc::geteuid() } == 0 {
+            let c = std::ffi::CString::new(parent.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::chown(c.as_ptr(), owner.0, owner.1) }, 0);
+        }
+
+        let host = RealHost::rooted(&dir);
+        host.write(live, b"x\n", Some(0o644)).unwrap();
+
+        let meta = std::fs::metadata(parent.join("new.conf")).unwrap();
+        if unsafe { libc::geteuid() } == 0 {
+            assert_eq!((meta.uid(), meta.gid()), owner, "new file did not inherit the directory owner");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -101,6 +101,25 @@ Two corrections after the first review, both measured rather than reasoned:
   pruned. The projection used to be written but unowned, so emptying `sysctl.toml` left
   `/etc/sysctl.d/90-genarch.conf` live and unreported — a second home for every value.
 
+## Write semantics, round 2 (settled 2026-11-11)
+
+The first fix round cured the kernel-filesystem blocker but introduced three hazards of its own,
+found in external review and fixed here:
+
+- **Ownership travels with the file.** A root-written temp is `0:0`, so `rename` reset the owner of
+  every user-owned target. The owner is now carried from the existing metadata with `fchown` on the
+  open descriptor, and a root run fails rather than silently producing a root-owned file. (Measured
+  live: two `~/.config/autostart` entries were root-owned after the cutover.) A **new** target, which
+  has no metadata to inherit, takes the owner of the directory it lands in.
+- **Descriptor, not path.** `fchmod`/`fchown` happen before `close`; a path-based `chmod` after
+  close follows a symlink planted in a user-writable directory.
+- **`system-sleep/` is never a staging area.** Its temp files go to `system-sleep-backups/`,
+  because systemd-sleep executes every file in the directory, whatever its name.
+
+Also in this round: kernel attributes use exactly one `write(2)`; a rehearsal root truncates;
+`mirror`/`prune`/`managed` are pairwise disjoint; the scheduled passes take the apply lock and log
+a skip instead of interleaving with an apply.
+
 ## Open
 
 - License and repository metadata (owner decision).

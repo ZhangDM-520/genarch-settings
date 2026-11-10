@@ -399,6 +399,28 @@ impl Intent {
     }
 
     fn validate(&self) -> Result<()> {
+        // A path may have one *kind* of owner. Mirror + prune on the same path made `apply`
+        // write the file and then delete it, leaving drift that never converges; mirror +
+        // managed meant a whole-file write and a line patch fighting over the same bytes.
+        // Several managed records on one target stay legal — that is how `asusd.ron` is
+        // patched at five anchors.
+        let mirror: std::collections::BTreeSet<&str> =
+            self.mirror.iter().map(|m| m.live.as_str()).collect();
+        let prune: std::collections::BTreeSet<&str> =
+            self.prune.iter().map(|p| p.as_str()).collect();
+        let managed: std::collections::BTreeSet<&str> =
+            self.managed.iter().map(|r| r.target.as_str()).collect();
+        for (a, b, a_kind, b_kind) in [
+            (&mirror, &prune, "mirror", "prune"),
+            (&mirror, &managed, "mirror", "managed"),
+            (&prune, &managed, "prune", "managed"),
+        ] {
+            if let Some(path) = a.intersection(b).next() {
+                return Err(Failure::precondition(format!(
+                    "{path} is declared as both {a_kind} and {b_kind}: one path, one owner"
+                )));
+            }
+        }
         for target in &self.mirror {
             if !target.live.starts_with('/') {
                 return Err(Failure::precondition(format!(
