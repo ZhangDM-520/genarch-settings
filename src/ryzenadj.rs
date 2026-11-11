@@ -106,7 +106,7 @@ pub fn apply(host: &dyn Host, config: &RyzenadjConfig) -> Result<Vec<CallResult>
             && !o.success {
                 let stderr = &o.stderr;
                 eprintln!(
-                    "genarch: ryzenadj failed: {} ({}): {}",
+                    "genarch-settings: ryzenadj failed: {} ({}): {}",
                     argv.join(" "),
                     o.status,
                     stderr.trim()

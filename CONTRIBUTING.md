@@ -17,8 +17,8 @@ test reads `system-tuning/docs/findings.md` through `SYSTEM_TUNING_ROOT` (defaul
 On the host itself:
 
 ```sh
-genarch report            # drift=0 is the bar
-genarch apply --dry-run   # PLAN 0 on a converged host
+genarch-settings report            # drift=0 is the bar
+genarch-settings apply --dry-run   # PLAN 0 on a converged host
 ```
 
 `harvest` is the only verb that proposes intent changes; it never writes.

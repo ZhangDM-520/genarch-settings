@@ -1,4 +1,4 @@
-# genarch
+# genarch-settings
 
 One Rust binary carries the declared intent, a read-only judge, the converge pass, the ryzenadj
 settings and the systemd units. The intent is layered: a host-agnostic **base**, a machine
@@ -8,19 +8,20 @@ stays in [`system-tuning`](https://github.com/ZhangDM-520/system-tuning), and `e
 rollback artifact.
 
 A second AMD laptop is a directory under `intent/profiles/` and one line in
-`/etc/genarch/profile` — the base carries no disk UUID, no user path and no silicon measurement.
+`/etc/genarch-settings/profile` — the base carries no disk UUID, no user path and no silicon measurement.
 A profile declares the machine it is for, and `report` says `PROFILE DRIFT` (exit 1) when it is
 applied to another one.
 
 ## What it does
 
 ```
-genarch report      [--json]     read-only verdicts; unprivileged OK
-genarch apply       [--dry-run]  converge live to intent; root
-genarch harvest                  proposal: the intent change that would match live
-genarch units                    the units the intent expects enabled, one per line
-genarch converge    <boot|resume|ceil>   the scheduled passes
-genarch import      <state> <profile-dir>  derive a profile from a legacy shell state tree
+genarch-settings report      [--json]     read-only verdicts; unprivileged OK
+genarch-settings apply       [--dry-run]  converge live to intent; root
+genarch-settings harvest                  proposal: the intent change that would match live
+genarch-settings units                    the units the intent expects enabled, one per line
+genarch-settings converge    <boot|resume|ceil>   the scheduled passes
+genarch-settings import      <state> <profile-dir>  derive a profile from a legacy shell state tree
+genarch-settings completions <bash|zsh|fish>   print a completion script on stdout
 ```
 
 Exit codes keep the shell engine's contract: `0` clean · `1` drift · `2` precondition · `3`
@@ -34,15 +35,33 @@ is selected), then `checks` and `summary`. The `APPLY-SCOPE` line says which row
 reach (`full`, `file-only`), which are judged against the intent alone (`intent`), and which it
 cannot touch (`none`).
 
+## Shell completions
+
+The package and `install.sh` write the three standard files, generated from the binary's own
+command tree, so a script can never describe a verb the binary does not have:
+
+```
+/usr/share/bash-completion/completions/genarch-settings
+/usr/share/zsh/site-functions/_genarch-settings
+/usr/share/fish/vendor_completions.d/genarch-settings.fish
+```
+
+On a host without either installer:
+
+```sh
+genarch-settings completions fish | source       # this shell only
+genarch-settings completions fish > ~/.config/fish/completions/genarch-settings.fish
+```
+
 ## Install
 
 On Arch, with the recipe next to the `gsa` recipe set:
 
 ```sh
-makepkg -f && sudo pacman -U genarch-0.3.1-1-x86_64.pkg.tar.zst
+makepkg -f && sudo pacman -U genarch-settings-0.3.1-1-x86_64.pkg.tar.zst
 ```
 
-The package ships this host's profile **and** its selection (`/etc/genarch/profile`, a pacman
+The package ships this host's profile **and** its selection (`/etc/genarch-settings/profile`, a pacman
 backup file). Without pacman — from this checkout or straight from a tagged tarball:
 
 ```sh
@@ -53,10 +72,10 @@ sudo ./install.sh --profile zenbook-s16   # also select this machine's profile
 
 `install.sh` is the portable path: it installs the base and every profile but selects none, so a
 fresh host runs the base intent and reports `PROFILE SKIPPED` until an operator writes
-`profile = "<name>"` into `/etc/genarch/profile`.
+`profile = "<name>"` into `/etc/genarch-settings/profile`.
 
-The engine reads its intent from `/usr/lib/genarch` (base + `profiles/<name>`), the operator
-layer from `/etc/genarch`, and records what it owns in `/var/lib/genarch/manifest.toml`. Nothing
+The engine reads its intent from `/usr/lib/genarch-settings` (base + `profiles/<name>`), the operator
+layer from `/etc/genarch-settings`, and records what it owns in `/var/lib/genarch-settings/manifest.toml`. Nothing
 is pruned unless the manifest says the engine wrote it, and a path belonging to a profile that is
 merely not selected stays owned.
 

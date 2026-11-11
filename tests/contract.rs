@@ -6,10 +6,10 @@
 //! human goes looking for a rule that moved.
 
 
-use genarch::check::{self, Class, Reach};
-use genarch::host::FixtureHost;
-use genarch::intent::{Intent, SCHEMA_VERSION};
-use genarch::report;
+use genarch_settings::check::{self, Class, Reach};
+use genarch_settings::host::FixtureHost;
+use genarch_settings::intent::{Intent, SCHEMA_VERSION};
+use genarch_settings::report;
 
 /// The ledger repo. `SYSTEM_TUNING_ROOT` exists for a checkout somewhere else; the default is
 /// the canonical path.
@@ -93,7 +93,7 @@ fn ids_are_unique_and_grouped_by_reach() {
 
 #[test]
 fn json_lists_every_registry_row_and_carries_the_scope() {
-    let dir = std::env::temp_dir().join(format!("genarch-contract-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genarch-settings-contract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("intent")).unwrap();
     std::fs::write(dir.join("intent/intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();

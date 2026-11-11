@@ -221,7 +221,7 @@ pub fn write_file(
         }
         None => path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf()),
     };
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("genarch");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("genarch-settings");
     let tmp = staging.join(format!(".{name}.{}.tmp", std::process::id()));
     let mut file = create_temp(fs, &tmp)?;
     file.write_all(bytes)
@@ -410,7 +410,7 @@ fn lock_at(path: &Path) -> Result<LockGuard> {
         )));
     }
     let _ = file.set_len(0);
-    let _ = std::io::Write::write_all(&mut file, format!("pid={} via=genarch\n", std::process::id()).as_bytes());
+    let _ = std::io::Write::write_all(&mut file, format!("pid={} via=genarch-settings\n", std::process::id()).as_bytes());
     Ok(LockGuard { file })
 }
 
@@ -528,10 +528,10 @@ impl RealHost {
         RealHost { root: root.into() }
     }
 
-    /// `GENARCH_ROOT` is a rehearsal override, not a test seam — tests build a
+    /// `GENARCH_SETTINGS_ROOT` is a rehearsal override, not a test seam — tests build a
     /// [`FixtureHost`] directly so the seam cannot drift from the tests' expectations.
     pub fn from_env() -> Self {
-        match std::env::var_os("GENARCH_ROOT") {
+        match std::env::var_os("GENARCH_SETTINGS_ROOT") {
             Some(root) if !root.is_empty() => RealHost::rooted(root),
             _ => RealHost::new(),
         }
@@ -792,7 +792,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("genarch-host-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("genarch-settings-host-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -861,7 +861,7 @@ mod tests {
 
     #[test]
     fn a_rehearsal_kernel_write_truncates_the_previous_value() {
-        // On a real kernel filesystem O_TRUNC is refused and irrelevant; on a GENARCH_ROOT
+        // On a real kernel filesystem O_TRUNC is refused and irrelevant; on a GENARCH_SETTINGS_ROOT
         // rehearsal it is a normal file, where a shorter value must not leave the old tail.
         let dir = scratch("rehearsal");
         let live = "/proc/sys/vm/swappiness";
@@ -880,14 +880,14 @@ mod tests {
         // systemd-sleep runs every file in that directory, whatever its name. A temp left by a
         // crash between chmod and rename would execute on the next resume.
         assert_eq!(
-            staging_live("/usr/lib/systemd/system-sleep/genarch"),
+            staging_live("/usr/lib/systemd/system-sleep/genarch-settings"),
             Some("/usr/lib/systemd/system-sleep-backups")
         );
         assert_eq!(staging_live("/usr/lib/systemd/system-sleep/nested/x"), None);
         assert_eq!(staging_live("/etc/tlp.d/01-eco.conf"), None);
 
         let dir = scratch("sleep-stage");
-        let live = "/usr/lib/systemd/system-sleep/genarch";
+        let live = "/usr/lib/systemd/system-sleep/genarch-settings";
         let target = dir.join(live.trim_start_matches('/'));
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
 
@@ -913,7 +913,7 @@ mod tests {
         // there too: what the gate proves is then what the apply does.
         let dir = scratch("fixture-sleep");
         let host = FixtureHost::new(&dir);
-        let live = "/usr/lib/systemd/system-sleep/genarch";
+        let live = "/usr/lib/systemd/system-sleep/genarch-settings";
         host.write(live, b"#!/bin/sh\ntrue\n", Some(0o755)).unwrap();
 
         let sleep_dir = dir.join("usr/lib/systemd/system-sleep");
@@ -931,7 +931,7 @@ mod tests {
             "a temp was staged inside system-sleep/: {created:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(sleep_dir.join("genarch")).unwrap(),
+            std::fs::read_to_string(sleep_dir.join("genarch-settings")).unwrap(),
             "#!/bin/sh\ntrue\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1046,7 +1046,7 @@ mod tests {
     fn only_kernel_filesystems_skip_the_atomic_path() {
         assert!(kernel_fs("/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"));
         assert!(kernel_fs("/proc/sys/vm/swappiness"));
-        assert!(!kernel_fs("/etc/sysctl.d/90-genarch.conf"));
-        assert!(!kernel_fs("/var/lib/genarch/manifest.toml"));
+        assert!(!kernel_fs("/etc/sysctl.d/90-genarch-settings.conf"));
+        assert!(!kernel_fs("/var/lib/genarch-settings/manifest.toml"));
     }
 }

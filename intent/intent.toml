@@ -1,14 +1,14 @@
-# genarch base intent. The one home for what is true of ANY host this engine serves.
+# genarch-settings base intent. The one home for what is true of ANY host this engine serves.
 #
 # Nothing here may name a disk, a user's home or this silicon's limits: those are a machine
-# profile under profiles/<name>/ (see /etc/genarch/profile). The manifest is the ownership
+# profile under profiles/<name>/ (see /etc/genarch-settings/profile). The manifest is the ownership
 # record, so there is no declared prune list — a path stops existing because the engine
 # wrote it and the intent stopped shipping it.
 schema = 3
 
 # Units the report expects enabled. A layer may add its own; the union is reported.
 [units]
-enabled = ["genarch.service", "genarch-ceil.timer"]
+enabled = ["genarch-settings.service", "genarch-settings-ceil.timer"]
 
 # The `ryzenadj --info` field labels the SMU row reads. This is the tool's output format,
 # declared rather than compiled in, so a different ryzenadj version is a config change.

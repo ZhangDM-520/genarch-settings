@@ -1,7 +1,0 @@
-[Unit]
-Description=genarch: cpufreq ceiling drift watch (no SMU writes)
-After=multi-user.target tlp.service asusd.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/genarch converge ceil

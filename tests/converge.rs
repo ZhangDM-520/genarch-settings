@@ -6,11 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
-use genarch::converge::{self, Planned};
-use genarch::host::{FixtureHost, Host};
-use genarch::intent::{Intent, SCHEMA_VERSION};
-use genarch::managed;
-use genarch::tree;
+use genarch_settings::converge::{self, Planned};
+use genarch_settings::host::{FixtureHost, Host};
+use genarch_settings::intent::{Intent, SCHEMA_VERSION};
+use genarch_settings::managed;
+use genarch_settings::tree;
 
 struct Case {
     dir: PathBuf,
@@ -18,7 +18,7 @@ struct Case {
 
 impl Case {
     fn new(name: &str) -> Case {
-        let dir = std::env::temp_dir().join(format!("genarch-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("genarch-settings-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Case { dir }
@@ -196,7 +196,7 @@ fn managed_zero_match_refuses_and_writes_nothing() {
     let intent = case.load();
     let host = case.host();
     let err = converge::apply(&intent, &host, false).unwrap_err();
-    assert_eq!(err.kind, genarch::exit::Exit::Partial);
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Partial);
     assert!(err.message.contains("0 lines match"), "{}", err.message);
     assert_eq!(case.read_live("/etc/systemd/journald.conf"), before);
     assert!(case.backups().is_empty(), "nothing may be written, not even a pre-image");
@@ -244,8 +244,8 @@ fn managed_section_scoping_ignores_a_lookalike_section() {
 fn system_sleep_pre_image_goes_to_a_sibling_directory() {
     let case = Case::new("sleep-backup");
     case.write_intent_meta();
-    case.write_intent_mirror("/usr/lib/systemd/system-sleep/genarch", "#!/bin/sh\nexit 0\n");
-    case.write_live("/usr/lib/systemd/system-sleep/genarch", "#!/bin/sh\nexit 1\n");
+    case.write_intent_mirror("/usr/lib/systemd/system-sleep/genarch-settings", "#!/bin/sh\nexit 0\n");
+    case.write_live("/usr/lib/systemd/system-sleep/genarch-settings", "#!/bin/sh\nexit 1\n");
 
     let intent = case.load();
     let host = case.host();
@@ -254,7 +254,7 @@ fn system_sleep_pre_image_goes_to_a_sibling_directory() {
     // systemd executes EVERY file in that directory: a sibling `.bak` would run on resume.
     let dir = case.live().join("usr/lib/systemd");
     assert!(
-        dir.join("system-sleep-backups/genarch.bak-" .to_string() + &genarch::clock::today()).exists(),
+        dir.join("system-sleep-backups/genarch-settings.bak-" .to_string() + &genarch_settings::clock::today()).exists(),
         "pre-image must live in system-sleep-backups/"
     );
     let siblings: Vec<_> = std::fs::read_dir(dir.join("system-sleep"))
@@ -322,20 +322,20 @@ fn prune_verdict_is_drift_not_a_warning() {
     .unwrap();
 
     let intent = case.load();
-    let verdicts = genarch::check::evaluate(&genarch::check::Ctx { host: &host, intent: &intent });
+    let verdicts = genarch_settings::check::evaluate(&genarch_settings::check::Ctx { host: &host, intent: &intent });
     let prune = verdicts.iter().find(|v| v.id == "PRUNE").unwrap();
-    assert_eq!(prune.class, genarch::check::Class::Drift, "{prune:?}");
+    assert_eq!(prune.class, genarch_settings::check::Class::Drift, "{prune:?}");
 
     converge::apply(&intent, &host, false).unwrap();
-    let verdicts = genarch::check::evaluate(&genarch::check::Ctx { host: &host, intent: &intent });
+    let verdicts = genarch_settings::check::evaluate(&genarch_settings::check::Ctx { host: &host, intent: &intent });
     let prune = verdicts.iter().find(|v| v.id == "PRUNE").unwrap();
-    assert_eq!(prune.class, genarch::check::Class::Ok, "{prune:?}");
+    assert_eq!(prune.class, genarch_settings::check::Class::Ok, "{prune:?}");
 }
 
 #[test]
 fn sysctl_projection_is_owned_and_pruned_when_it_leaves_the_intent() {
     // The projection is a file the engine writes, so it has to be in the manifest. It was
-    // not: emptying sysctl.toml left /etc/sysctl.d/90-genarch.conf live and unreported, which
+    // not: emptying sysctl.toml left /etc/sysctl.d/90-genarch-settings.conf live and unreported, which
     // is exactly the "two homes for one value" the design exists to kill.
     let case = Case::new("projection");
     case.write_intent_meta();
@@ -431,7 +431,7 @@ fn a_refused_pass_write_is_a_failure_not_a_silent_skip() {
 
     let intent = case.load();
     let host = case.host();
-    let err = genarch::pass::run(&host, &intent, genarch::pass::Pass::Resume).unwrap_err();
+    let err = genarch_settings::pass::run(&host, &intent, genarch_settings::pass::Pass::Resume).unwrap_err();
     assert!(err.message.contains("write"), "{}", err.message);
 }
 
@@ -446,7 +446,7 @@ fn lock_conflict_is_a_precondition_failure_naming_the_holder() {
     let host = case.host();
     let first = host.lock(converge::LOCK_PATH).unwrap();
     let err = converge::apply(&intent, &host, false).unwrap_err();
-    assert_eq!(err.kind, genarch::exit::Exit::Precondition);
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Precondition);
     assert!(err.message.contains("lock held by"), "{}", err.message);
     drop(first);
     converge::apply(&intent, &host, false).unwrap();
@@ -540,7 +540,7 @@ fn a_plan_carries_the_managed_record_it_will_write() {
     assert_eq!(record.name, "journald");
     assert_eq!(record.line, "SystemMaxUse=256M");
 
-    genarch::managed::replace(&host, record).unwrap();
+    genarch_settings::managed::replace(&host, record).unwrap();
     assert_eq!(case.read_live("/etc/m.conf"), "SystemMaxUse=256M\n");
 }
 
@@ -567,7 +567,7 @@ fn planned_variants_are_reachable_from_the_plan() {
 fn probe_reports_the_three_terminal_states() {
     let case = Case::new("probe");
     case.write_live("/etc/p.conf", "Key=old\n");
-    let record = genarch::intent::ManagedRecord {
+    let record = genarch_settings::intent::ManagedRecord {
         name: "p".into(),
         target: "/etc/p.conf".into(),
         match_expr: "^Key=".into(),
@@ -582,7 +582,7 @@ fn probe_reports_the_three_terminal_states() {
     managed::replace(&host, &record).unwrap();
     assert_eq!(managed::probe(&host, &record).unwrap().state, managed::State::Ok);
 
-    let missing = genarch::intent::ManagedRecord {
+    let missing = genarch_settings::intent::ManagedRecord {
         target: "/etc/absent.conf".into(),
         ..record
     };
@@ -609,7 +609,7 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
     std::fs::create_dir_all(&base).unwrap();
     std::fs::write(base.join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
     let out = base.join("profiles/imported");
-    let summary = genarch::import::run(state, &out).unwrap();
+    let summary = genarch_settings::import::run(state, &out).unwrap();
     assert!(summary.mirror > 40, "expected the whole owned set, got {}", summary.mirror);
 
     let owned = state.join("owned");
@@ -717,7 +717,7 @@ fn sysctl_table_is_projected_into_one_file() {
     converge::apply(&intent, &host, false).unwrap();
 
     let rendered = case.read_live(converge::RENDERED_SYSCTL_CONF);
-    assert!(rendered.starts_with("# Generated by genarch"), "{rendered}");
+    assert!(rendered.starts_with("# Generated by genarch-settings"), "{rendered}");
     assert!(rendered.contains("kernel.sysrq = 190"), "{rendered}");
     assert!(rendered.contains("vm.swappiness = 150"), "{rendered}");
     // Sorted: the file must not churn between applies.
@@ -754,7 +754,7 @@ fn a_pass_stands_down_while_an_apply_holds_the_lock() {
     let host = case.host();
     let held = host.lock(converge::LOCK_PATH).unwrap();
 
-    let report = genarch::pass::run(&host, &intent, genarch::pass::Pass::Ceil).unwrap();
+    let report = genarch_settings::pass::run(&host, &intent, genarch_settings::pass::Pass::Ceil).unwrap();
     assert!(
         report.lines.iter().any(|line| line.contains("pass skipped")),
         "{:?}",
@@ -762,7 +762,7 @@ fn a_pass_stands_down_while_an_apply_holds_the_lock() {
     );
 
     drop(held);
-    let report = genarch::pass::run(&host, &intent, genarch::pass::Pass::Ceil).unwrap();
+    let report = genarch_settings::pass::run(&host, &intent, genarch_settings::pass::Pass::Ceil).unwrap();
     assert!(
         !report.lines.iter().any(|line| line.contains("pass skipped")),
         "{:?}",

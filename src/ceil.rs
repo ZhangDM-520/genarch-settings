@@ -343,7 +343,7 @@ mod tests {
         // related_cpus is always readable on a real machine, so the band must still answer when
         // the CPU set matches no class.
         use crate::host::FixtureHost;
-        let dir = std::env::temp_dir().join(format!("genarch-ceil-band-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("genarch-settings-ceil-band-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let policy = "/sys/devices/system/cpu/cpufreq/policy0";
         std::fs::create_dir_all(dir.join(policy.trim_start_matches('/'))).unwrap();

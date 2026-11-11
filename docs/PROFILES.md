@@ -1,7 +1,7 @@
 # Profiles
 
 A **profile** is the machine layer: a directory under `intent/profiles/<slug>/` that carries
-everything true of one laptop and nothing true of another. `/etc/genarch/profile` selects it
+everything true of one laptop and nothing true of another. `/etc/genarch-settings/profile` selects it
 (`profile = "<slug>"`), and `/sys/class/dmi/id` decides whether it is the right machine
 (`[requires]`, reported as the `PROFILE` row).
 
@@ -14,7 +14,7 @@ inherits this project's own laptop — is exactly what made 0.1.x non-portable.
 `thinkpad-z13-gen2`, `zephyrus-g14-2024`, `elitebook-845-g11`, `zenbook-s16`.
 
 The directory name **is** the profile name, and it is what the operator writes in
-`/etc/genarch/profile`. Rename the directory and you have renamed the profile.
+`/etc/genarch-settings/profile`. Rename the directory and you have renamed the profile.
 
 ## Provenance: the rule that decides what may be in a profile
 
@@ -121,10 +121,10 @@ says. It fails on a *plausible* profile as well as a broken one, which is the po
 ## Selecting it
 
 ```sh
-printf 'profile = "framework-13-amd-7040"\n' | sudo tee /etc/genarch/profile
-sudo genarch apply --dry-run    # read the plan
-sudo genarch apply
-genarch report                  # PROFILE must be OK; the rest says what was judged
+printf 'profile = "framework-13-amd-7040"\n' | sudo tee /etc/genarch-settings/profile
+sudo genarch-settings apply --dry-run    # read the plan
+sudo genarch-settings apply
+genarch-settings report                  # PROFILE must be OK; the rest says what was judged
 ```
 
 On a machine whose DMI does not match, `PROFILE` reports DRIFT and `apply` exits 1 — the writes

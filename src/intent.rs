@@ -6,12 +6,12 @@
 //!
 //! Three layers, one intent, precedence `base → profile → operator`:
 //!
-//! - **base** (`/usr/lib/genarch`) — what is true of any host this engine serves. No disk
+//! - **base** (`/usr/lib/genarch-settings`) — what is true of any host this engine serves. No disk
 //!   UUID, no user path, no silicon measurement.
 //! - **profile** (`{base,overlay}/profiles/<name>`) — the machine layer, selected by
-//!   `profile = "<name>"` in `/etc/genarch/profile`. Empty is legal: with no profile the
+//!   `profile = "<name>"` in `/etc/genarch-settings/profile`. Empty is legal: with no profile the
 //!   engine applies the base and the rows that depend on a profile report `SKIPPED`.
-//! - **operator** (`/etc/genarch`) — the last word, always.
+//! - **operator** (`/etc/genarch-settings`) — the last word, always.
 //!
 //! Merge rules are per class, because "replace the whole file" made the cheapest
 //! customisation a fork: scalar maps merge per key (`sysctl`, `ryzenadj`, `passes`), lists
@@ -275,11 +275,11 @@ pub struct Profile {
 #[derive(Debug, Clone, Default)]
 pub struct Intent {
     pub schema: u32,
-    /// Base root the intent was loaded from (`/usr/lib/genarch`).
+    /// Base root the intent was loaded from (`/usr/lib/genarch-settings`).
     pub base: PathBuf,
-    /// Override root (`/etc/genarch`), whether or not it exists.
+    /// Override root (`/etc/genarch-settings`), whether or not it exists.
     pub overlay: PathBuf,
-    /// The selected profile, when `/etc/genarch/profile` names one.
+    /// The selected profile, when `/etc/genarch-settings/profile` names one.
     pub profile: Option<Profile>,
     /// Runtime sysctl values, key → value. Multi-word values keep their spaces.
     pub sysctl: BTreeMap<String, String>,
@@ -337,7 +337,7 @@ struct Layer {
     meta: Meta,
 }
 
-/// `/etc/genarch/profile`: which machine layer to select.
+/// `/etc/genarch-settings/profile`: which machine layer to select.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Selection {
@@ -345,12 +345,12 @@ struct Selection {
 }
 
 impl Intent {
-    /// Load from the standard locations, honouring `GENARCH_INTENT` for a rehearsal copy.
+    /// Load from the standard locations, honouring `GENARCH_SETTINGS_INTENT` for a rehearsal copy.
     pub fn load_default(host: &dyn Host) -> Result<Intent> {
-        let base = std::env::var_os("GENARCH_INTENT")
+        let base = std::env::var_os("GENARCH_SETTINGS_INTENT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| host.resolve("/usr/lib/genarch"));
-        let overlay = host.resolve("/etc/genarch");
+            .unwrap_or_else(|| host.resolve("/usr/lib/genarch-settings"));
+        let overlay = host.resolve("/etc/genarch-settings");
         Intent::load(&base, &overlay)
     }
 
@@ -713,7 +713,7 @@ where
 
 /// Units are **unioned**, the one class that is not replace-or-per-key: an "expected enabled"
 /// entry is an expectation a layer adds, and a layer cannot withdraw another's. Replacing
-/// would let a profile silently drop `genarch.service` from the report.
+/// would let a profile silently drop `genarch-settings.service` from the report.
 fn load_units(layers: &[Layer]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();

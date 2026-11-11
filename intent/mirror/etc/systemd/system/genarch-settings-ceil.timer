@@ -1,5 +1,5 @@
 [Unit]
-Description=genarch: cpufreq ceiling drift catch (2 min)
+Description=genarch-settings: cpufreq ceiling drift catch (2 min)
 
 [Timer]
 OnBootSec=2min

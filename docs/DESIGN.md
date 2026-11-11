@@ -16,7 +16,7 @@ the gate.
 
 `trait Host` is the only way the engine touches the machine. Two adapters:
 
-- `RealHost` — the live root, optionally aimed at a copy (`GENARCH_ROOT`) for a rehearsal.
+- `RealHost` — the live root, optionally aimed at a copy (`GENARCH_SETTINGS_ROOT`) for a rehearsal.
 - `FixtureHost` — a scratch tree; records writes, answers `run` from a canned table.
 
 The shell engine's entire testability rested on one path-prefix hack (`ECO_ROOT`). Making it a
@@ -57,8 +57,11 @@ precedence. The engine applies values from one table directly to `/proc/sys`, so
 ## Why four verbs
 
 `report`, `apply`, `harvest`, `converge <pass>`. Fewer would overload `apply` with question-asking
-behaviour; more would put engine internals on the operator's command line. `import` exists only
-for the migration and is not part of the steady-state surface.
+behaviour; more would put engine internals on the operator's command line. `units` and
+`completions` are *answers*, not actions: each prints a generated list the installers consume, so
+the unit list and the completion scripts have one home (the intent, and the clap command tree)
+instead of a hand-maintained copy per installer. `import` exists only for the migration and is not
+part of the steady-state surface.
 
 Exit codes are inherited unchanged (0 clean / 1 drift / 2 precondition / 3 partial) because they
 are what timers, hooks and the runbook branch on. The *report surface* is free to change: it is
@@ -82,7 +85,7 @@ Encoding the split in the interface means a unit cannot accidentally ask for the
 
 - **A stray in the mirror is a hard failure**, not a skipped file. It is package data; a backup
   name there is a packaging bug that must be seen before a plan exists.
-- **`GENARCH_ROOT` exists in the CLI** even though tests do not use it. It is the only way to
+- **`GENARCH_SETTINGS_ROOT` exists in the CLI** even though tests do not use it. It is the only way to
   rehearse a plan against a copy of the live tree, which the cutover depends on.
 - **`CO` is judged from intent, not from silicon**: the SMU does not read a curve offset back.
   The row guards the thing a rewrite can lose (the offset disappearing), and says so.
@@ -101,7 +104,7 @@ Two corrections after the first review, both measured rather than reasoned:
 - **The manifest owns what the engine writes.** `owned` is prune-eligible (mirrors + the sysctl
   projection); `touched` records the foreign files patched through a managed record and is never
   pruned. The projection used to be written but unowned, so emptying `sysctl.toml` left
-  `/etc/sysctl.d/90-genarch.conf` live and unreported — a second home for every value.
+  `/etc/sysctl.d/90-genarch-settings.conf` live and unreported — a second home for every value.
 
 ## Write semantics, round 2 (settled 2026-11-11)
 
@@ -128,9 +131,9 @@ The engine was generic and the shipped data was one laptop: `/etc/fstab` with th
 this user's autostart entries, this silicon's offsets, and — through absent fields — this SoC's
 wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was a fork.
 
-- **Three layers, one intent.** Base (`/usr/lib/genarch`) carries only what is true of any host;
-  the profile (`profiles/<name>`, selected by `profile = "<name>"` in `/etc/genarch/profile`)
-  carries every measurement and identity; the operator (`/etc/genarch`) has the last word. Base
+- **Three layers, one intent.** Base (`/usr/lib/genarch-settings`) carries only what is true of any host;
+  the profile (`profiles/<name>`, selected by `profile = "<name>"` in `/etc/genarch-settings/profile`)
+  carries every measurement and identity; the operator (`/etc/genarch-settings`) has the last word. Base
   and profile are themselves layered per class, so an operator file does not shadow a whole tree.
 - **Per-class merge, not whole-file.** Scalar maps merge per key (`sysctl`, `ryzenadj`, `passes`);
   lists replace wholesale; mirrors and managed records are whole-file with an `[omit]` tombstone.
@@ -140,7 +143,7 @@ wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was 
   the base the last word. Every tombstone must name something below it, so a stale or
   mistaken one is a load error.
 - **Units are the one union.** An "expected enabled" entry is an expectation a layer adds and
-  cannot withdraw another's; replacing would let a profile silently drop `genarch.service` from
+  cannot withdraw another's; replacing would let a profile silently drop `genarch-settings.service` from
   the report. Every other class merges per key or replaces wholesale.
 - **Empty is legal, and it is not a guess.** With no profile the intent is the base, the rows that
   need a machine fact say SKIPPED, and no default is invented. A profile declares `[requires]`

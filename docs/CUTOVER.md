@@ -1,5 +1,10 @@
 # CUTOVER — flipping this host from the shell `eco` stack to `genarch`
 
+> **Historical record (2026-11-10).** Written when the binary was named `genarch`. The current
+> name, path and units are `genarch-settings` (renamed in 0.4.0); the commands below are kept
+> verbatim so the record stays true to what was run. For the current procedure see `README.md`
+> and `install.sh`.
+
 Nothing in this file is optional, and the order is the safety property. Two engines must never
 converge the same host, and the shell engine re-creates its own files from
 `system-tuning/state/` on every boot — so "install the package" alone leaves a double writer.

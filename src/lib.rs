@@ -1,4 +1,4 @@
-//! genarch: the tuning engine for one Arch host.
+//! genarch-settings: the tuning engine for one Arch host.
 //!
 //! Layering, outermost first:
 //!

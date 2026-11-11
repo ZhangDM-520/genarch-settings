@@ -6,13 +6,13 @@
 
 use std::process::ExitCode;
 
-use genarch::check::{self, Ctx};
-use genarch::cli::{Cli, Verb};
-use genarch::converge;
-use genarch::exit::{Exit, Failure};
-use genarch::host::RealHost;
-use genarch::intent::Intent;
-use genarch::{import, pass, report};
+use genarch_settings::check::{self, Ctx};
+use genarch_settings::cli::{self, Cli, Verb};
+use genarch_settings::converge;
+use genarch_settings::exit::{Exit, Failure};
+use genarch_settings::host::RealHost;
+use genarch_settings::intent::Intent;
+use genarch_settings::{import, pass, report};
 
 use clap::Parser;
 
@@ -21,13 +21,13 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(exit) => ExitCode::from(exit.code() as u8),
         Err(failure) => {
-            eprintln!("genarch: {}", failure.message);
+            eprintln!("genarch-settings: {}", failure.message);
             ExitCode::from(failure.kind.code() as u8)
         }
     }
 }
 
-fn run(cli: Cli) -> genarch::Result<Exit> {
+fn run(cli: Cli) -> genarch_settings::Result<Exit> {
     let host = RealHost::from_env();
     match cli.verb {
         Verb::Report { json } => {
@@ -89,6 +89,10 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
         Verb::Converge { pass: which } => {
             let intent = Intent::load_default(&host)?;
             pass::run(&host, &intent, which.as_pass())?;
+            Ok(Exit::Clean)
+        }
+        Verb::Completions { shell } => {
+            print!("{}", cli::completions(shell));
             Ok(Exit::Clean)
         }
         Verb::Import { state, profile_dir } => {

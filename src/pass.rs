@@ -35,7 +35,7 @@ pub struct Report {
 impl Report {
     fn say(&mut self, line: impl Into<String>) {
         let line = line.into();
-        eprintln!("genarch: {line}");
+        eprintln!("genarch-settings: {line}");
         self.lines.push(line);
     }
 }

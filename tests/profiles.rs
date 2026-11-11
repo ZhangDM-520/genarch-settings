@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use genarch::intent::{Intent, ProfileStatus};
+use genarch_settings::intent::{Intent, ProfileStatus};
 
 /// Facts that only exist on the machine in hand. A profile that carries one is a measurement
 /// pretending to be a document — the exact mistake that made 0.1.x non-portable.
@@ -43,7 +43,7 @@ fn load_at(intent_root: &Path, slug: &str) -> Result<Intent, String> {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "genarch-profile-{}-{slug}-{seq}",
+        "genarch-settings-profile-{}-{slug}-{seq}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -252,7 +252,7 @@ fn the_audit_catches_a_measured_fact_in_a_documented_profile() {
     // The gate is only worth having if it fails. This builds a profile that looks right and
     // carries exactly the things a documented profile must not: a machine path, a measured CO
     // offset and a wake list.
-    let dir = std::env::temp_dir().join(format!("genarch-profile-audit-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genarch-settings-profile-audit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let base = dir.join("base");
     let overlay = dir.join("etc");

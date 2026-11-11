@@ -24,4 +24,4 @@ sys_vendor = "Framework"
 # power-profiles-daemon over TLP on this machine. The engine does not manage PPD; recorded here
 # so an operator adding a TLP record knows what it would conflict with.
 [units]
-enabled = ["genarch.service", "genarch-ceil.timer"]
+enabled = ["genarch-settings.service", "genarch-settings-ceil.timer"]

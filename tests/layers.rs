@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use genarch::check::{self, Class, Ctx};
-use genarch::host::{FixtureHost, Host};
-use genarch::intent::{Intent, SCHEMA_VERSION};
+use genarch_settings::check::{self, Class, Ctx};
+use genarch_settings::host::{FixtureHost, Host};
+use genarch_settings::intent::{Intent, SCHEMA_VERSION};
 
 struct Tree {
     dir: PathBuf,
@@ -16,7 +16,7 @@ struct Tree {
 
 impl Tree {
     fn new(name: &str) -> Tree {
-        let dir = std::env::temp_dir().join(format!("genarch-layers-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("genarch-settings-layers-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("base")).unwrap();
         std::fs::create_dir_all(dir.join("etc")).unwrap();
@@ -68,7 +68,7 @@ impl Tree {
         FixtureHost::new(self.dir.join("live"))
     }
 
-    fn load(&self) -> genarch::Result<Intent> {
+    fn load(&self) -> genarch_settings::Result<Intent> {
         Intent::load(&self.base(), &self.overlay())
     }
 }
@@ -179,7 +179,7 @@ fn lists_replace_wholesale_and_scalars_merge_per_key() {
         .write(
             "intent.toml",
             &format!(
-                "schema = {SCHEMA_VERSION}\n[units]\nenabled = [\"genarch.service\"]\n"
+                "schema = {SCHEMA_VERSION}\n[units]\nenabled = [\"genarch-settings.service\"]\n"
             ),
         )
         .write(
@@ -203,7 +203,7 @@ fn lists_replace_wholesale_and_scalars_merge_per_key() {
     // Units are the one union: each layer expects its own, and neither can withdraw another's.
     assert_eq!(
         intent.units,
-        vec!["genarch.service".to_string(), "zenbook.service".to_string()]
+        vec!["genarch-settings.service".to_string(), "zenbook.service".to_string()]
     );
     // The profile said nothing about these, so the layer below keeps them.
     assert_eq!(intent.passes.usb_autosuspend, Some(vec!["13d3:3608".to_string()]));
@@ -216,7 +216,7 @@ fn no_profile_selected_means_base_only_and_no_guessed_host_defaults() {
     let tree = Tree::new("base-only")
         .write("sysctl.toml", "[values]\n\"vm.a\" = \"1\"\n")
         .write("mirror/etc/base.conf", "x\n")
-        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n\n[units]\nenabled = [\"genarch.service\"]\n"));
+        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n\n[units]\nenabled = [\"genarch-settings.service\"]\n"));
 
     let intent = tree.load().unwrap();
     assert!(intent.profile.is_none());
@@ -224,7 +224,7 @@ fn no_profile_selected_means_base_only_and_no_guessed_host_defaults() {
     assert!(intent.passes.wake_disarm.is_none(), "no wake list may be guessed");
     assert!(intent.ryzenadj.co.all.is_none(), "no CO offset may be guessed");
     assert_eq!(intent.mirror.len(), 1);
-    assert_eq!(intent.units, vec!["genarch.service".to_string()]);
+    assert_eq!(intent.units, vec!["genarch-settings.service".to_string()]);
 
     // And the rows that depend on a profile say so instead of inventing a verdict.
     let host = tree.host();
@@ -283,16 +283,16 @@ fn an_apply_on_a_mismatched_profile_still_runs_but_exits_drift() {
     std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Wrong\n").unwrap();
 
     let intent = tree.load().unwrap();
-    let (plan, outcome) = genarch::converge::apply(&intent, &host, false).unwrap();
+    let (plan, outcome) = genarch_settings::converge::apply(&intent, &host, false).unwrap();
     assert!(!plan.profile_mismatch.is_empty(), "{plan:?}");
     assert_eq!(outcome.applied.len(), 1, "the apply still converges the base");
-    assert_eq!(genarch::converge::apply_exit(&plan), genarch::Exit::Drift);
+    assert_eq!(genarch_settings::converge::apply_exit(&plan), genarch_settings::Exit::Drift);
 
     // A matching machine (or no profile) leaves the exit clean.
     std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Right\n").unwrap();
     let matching = tree.load().unwrap();
-    let (plan, _) = genarch::converge::apply(&matching, &host, false).unwrap();
-    assert_eq!(genarch::converge::apply_exit(&plan), genarch::Exit::Clean);
+    let (plan, _) = genarch_settings::converge::apply(&matching, &host, false).unwrap();
+    assert_eq!(genarch_settings::converge::apply_exit(&plan), genarch_settings::Exit::Clean);
 }
 
 #[test]
@@ -340,15 +340,15 @@ fn the_json_schema_states_the_selected_profile_and_whether_it_matched() {
 
     let intent = tree.load().unwrap();
     let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
-    let doc = genarch::report::json(&intent, &verdicts);
+    let doc = genarch_settings::report::json(&intent, &verdicts);
     assert!(doc.starts_with("{\"schema\":2,\"profile\":{\"name\":\"p1\",\"matched\":true,"), "{doc}");
     assert!(doc.contains("\"requires\":{\"product\":\"Right Machine\"}"), "{doc}");
-    assert!(genarch::report::scope_line(Some("p1")).starts_with("APPLY-SCOPE profile=p1 full="));
+    assert!(genarch_settings::report::scope_line(Some("p1")).starts_with("APPLY-SCOPE profile=p1 full="));
 
     std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Other\n").unwrap();
     let intent = tree.load().unwrap();
     let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
-    let doc = genarch::report::json(&intent, &verdicts);
+    let doc = genarch_settings::report::json(&intent, &verdicts);
     assert!(doc.contains("\"matched\":false"), "{doc}");
 }
 
@@ -371,7 +371,7 @@ fn only_a_profile_may_declare_requires_and_only_known_facts() {
 
 #[test]
 fn deselecting_a_profile_does_not_unmanage_its_mirrors() {
-    // Ownership survives selection. Otherwise a lost `/etc/genarch/profile` would read the
+    // Ownership survives selection. Otherwise a lost `/etc/genarch-settings/profile` would read the
     // profile's mirrors as withdrawn and prune them — `/etc/fstab` included.
     let tree = Tree::new("dormant")
         .write("mirror/etc/base.conf", "base\n")
@@ -380,7 +380,7 @@ fn deselecting_a_profile_does_not_unmanage_its_mirrors() {
     let home = |tree: &Tree| FixtureHost::new(tree.dir.join("live"));
     let host = home(&tree);
     let selected = tree.load().unwrap();
-    genarch::converge::apply(&selected, &host, false).unwrap();
+    genarch_settings::converge::apply(&selected, &host, false).unwrap();
     assert!(host.exists("/etc/fstab"));
 
     // The selection is gone: the base intent no longer ships /etc/fstab, but the profile that
@@ -388,24 +388,24 @@ fn deselecting_a_profile_does_not_unmanage_its_mirrors() {
     std::fs::remove_file(tree.overlay().join("profile")).unwrap();
     let base_only = tree.load().unwrap();
     assert!(base_only.dormant.contains("/etc/fstab"), "{:?}", base_only.dormant);
-    let plan = genarch::converge::plan(&base_only, &host).unwrap();
+    let plan = genarch_settings::converge::plan(&base_only, &host).unwrap();
     assert!(
-        !plan.changes.iter().any(|c| matches!(c, genarch::converge::Planned::Prune { .. })),
+        !plan.changes.iter().any(|c| matches!(c, genarch_settings::converge::Planned::Prune { .. })),
         "a deselected profile must not hand its files back: {plan:?}"
     );
     // The manifest keeps the path owned, so reselecting does not look like a new write.
-    let manifest = genarch::converge::Manifest::load(&host).unwrap();
+    let manifest = genarch_settings::converge::Manifest::load(&host).unwrap();
     assert!(manifest.owned.contains("/etc/fstab"), "{manifest:?}");
 
     // A profile that actually stops shipping the path is a different statement: it is pruned.
     std::fs::remove_dir_all(tree.base().join("profiles/p1")).unwrap();
     let withdrawn = tree.load().unwrap();
     assert!(withdrawn.dormant.is_empty());
-    let plan = genarch::converge::plan(&withdrawn, &host).unwrap();
+    let plan = genarch_settings::converge::plan(&withdrawn, &host).unwrap();
     assert!(
         plan.changes
             .iter()
-            .any(|c| matches!(c, genarch::converge::Planned::Prune { live } if live == "/etc/fstab")),
+            .any(|c| matches!(c, genarch_settings::converge::Planned::Prune { live } if live == "/etc/fstab")),
         "{plan:?}"
     );
 }
@@ -429,7 +429,7 @@ fn ceiling_classes_come_from_the_profile_layer() {
     std::fs::write(tree.dir.join("live/sys/devices/system/cpu/cpufreq/policy0/related_cpus"), "0 1 2 3\n")
         .unwrap();
     assert_eq!(
-        genarch::ceil::want_for_policy(&host, classes, policy).unwrap(),
+        genarch_settings::ceil::want_for_policy(&host, classes, policy).unwrap(),
         Some(4_700_000)
     );
 }
@@ -438,7 +438,7 @@ fn ceiling_classes_come_from_the_profile_layer() {
 fn the_shipped_intent_loads_as_base_plus_the_selected_profile() {
     // The repository tree is what the package ships: a base with no machine facts, and one
     // profile that carries this machine's. If this stops loading, the release is broken.
-    let dir = std::env::temp_dir().join(format!("genarch-shipped-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genarch-settings-shipped-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("selected")).unwrap();
     std::fs::create_dir_all(dir.join("bare")).unwrap();

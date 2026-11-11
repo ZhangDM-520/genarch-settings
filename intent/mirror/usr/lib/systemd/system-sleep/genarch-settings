@@ -1,5 +1,5 @@
 #!/bin/sh
 # Re-apply the firmware-adjacent settings after resume: suspend loses them.
 # Single pass, no sleep — systemd thaws user.slice only after this hook exits.
-[ "$1" = post ] && exec /usr/bin/genarch converge resume
+[ "$1" = post ] && exec /usr/bin/genarch-settings converge resume
 exit 0

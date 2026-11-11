@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn only_deployable_names_deploy() {
-        for name in ["01-eco.conf", "genarch", "fstab", "10-user-tmp.conf"] {
+        for name in ["01-eco.conf", "genarch-settings", "fstab", "10-user-tmp.conf"] {
             assert!(is_deployable_name(name), "{name} must deploy");
         }
         for name in [
