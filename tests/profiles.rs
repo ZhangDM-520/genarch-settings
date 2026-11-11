@@ -127,6 +127,18 @@ fn audit_at(profiles: &Path, slug: &str) -> Vec<String> {
         if intent.passes.usb_autosuspend.is_some() {
             problems.push("usb_autosuspend: a device list is read with lsusb".to_string());
         }
+        // CPU numbering is a machine fact: a stranger's core layout is not published, and a
+        // documented class keyed by CPU id would cap the wrong cores on a SKU that shares the
+        // product string. A documented profile declares clocks, not core maps.
+        if let Some(ceil) = &intent.ceil {
+            for class in ceil.classes.iter().filter(|c| !c.is_band()) {
+                problems.push(format!(
+                    "ceil: documented class '{}' names CPUs; a clock band is the most this class \
+                     of profile can know",
+                    class.name
+                ));
+            }
+        }
     }
 
     // A *measured* profile may own the machine's own paths — that is what measuring means, and
@@ -203,8 +215,10 @@ fn no_two_profiles_claim_the_same_machine() {
 
 #[test]
 fn the_measured_profile_is_marked_measured_and_the_rest_are_not() {
-    // The one measured profile is the reference implementation; every other profile must either
-    // cite its values or say it was measured here, and nothing in between.
+    // The one measured profile is the reference implementation. Every other profile must say
+    // `status = "documented"`: the default is `measured`, so a profile that merely omits the
+    // field would silently skip every documented-profile check in the audit above.
+    const MEASURED: &[&str] = &["zenbook-s16"];
     let measured = load("zenbook-s16").expect("the reference profile must load");
     assert_eq!(
         measured.profile.as_ref().unwrap().status,
@@ -212,24 +226,25 @@ fn the_measured_profile_is_marked_measured_and_the_rest_are_not() {
         "zenbook-s16 is our own hardware"
     );
 
-    let documented: Vec<String> = slugs()
-        .into_iter()
-        .filter(|slug| {
-            load(slug)
-                .ok()
-                .and_then(|i| i.profile.map(|p| p.status))
-                .map(|s| s == ProfileStatus::Documented)
-                .unwrap_or(false)
-        })
-        .collect();
-    for slug in &documented {
-        let intent = load(slug).unwrap();
-        let sources = &intent.profile.as_ref().unwrap().source;
+    let mut undocumented = Vec::new();
+    for slug in slugs().iter().filter(|s| !MEASURED.contains(&s.as_str())) {
+        let intent = load(slug).unwrap_or_else(|e| panic!("{slug}: {e}"));
+        let profile = intent.profile.as_ref().expect("the profile must load");
+        if profile.status != ProfileStatus::Documented {
+            undocumented.push(slug.clone());
+        }
         assert!(
-            sources.iter().all(|s| s.starts_with("http")),
-            "{slug}: a source must be a URL, got {sources:?}"
+            profile.source.iter().all(|s| s.starts_with("http")),
+            "{slug}: a source must be a URL, got {:?}",
+            profile.source
         );
+        assert!(!profile.source.is_empty(), "{slug}: a documented profile must cite a source");
     }
+    assert!(
+        undocumented.is_empty(),
+        "profiles that would skip the documented-profile checks because they never declared \
+         `status = \"documented\"`: {undocumented:?}"
+    );
 }
 
 #[test]
@@ -252,6 +267,11 @@ fn the_audit_catches_a_measured_fact_in_a_documented_profile() {
     .unwrap();
     std::fs::write(base.join("profiles/fake/ryzenadj.toml"), "[co]\nall = -7\n").unwrap();
     std::fs::write(
+        base.join("profiles/fake/ceil.toml"),
+        "[[class]]\nname = \"cores\"\ncpus = [\"0-3\"]\nkhz = 5100000\n",
+    )
+    .unwrap();
+    std::fs::write(
         base.join("profiles/fake/passes.toml"),
         "wake_disarm = [\"GPP0\"]\nusb_autosuspend = [\"13d3:3608\"]\n",
     )
@@ -267,7 +287,7 @@ fn the_audit_catches_a_measured_fact_in_a_documented_profile() {
     // The audit must fire on every one of these, not merely observe them.
     let problems = audit_at(&base.join("profiles"), "fake");
     let joined = problems.join("\n");
-    for expected in ["file:", "co:", "wake_disarm:", "usb_autosuspend:", "path:"] {
+    for expected in ["file:", "co:", "wake_disarm:", "usb_autosuspend:", "path:", "ceil:"] {
         assert!(
             problems.iter().any(|p| p.starts_with(expected)),
             "audit missed {expected}:\n{joined}"

@@ -105,7 +105,24 @@ impl CeilConfig {
             }
             let mut cpus = BTreeSet::new();
             for chunk in &class.cpus {
-                cpus.extend(parse_cpu_list(chunk));
+                let parsed = parse_cpu_list(chunk).ok_or_else(|| {
+                    Failure::precondition(format!(
+                        "{}: class '{name}' lists {chunk:?}, which is not a CPU list \
+                         (\"0-3,12-15\" or \"0 1 2 3\"); a typo there would make a measured \
+                         class silently apply as a frequency band",
+                        path.display()
+                    ))
+                })?;
+                cpus.extend(parsed);
+            }
+            // An empty `cpus` array is a band on purpose; a non-empty one that names no CPU is a
+            // mistake, and must not be read as the same thing.
+            if !class.cpus.is_empty() && cpus.is_empty() {
+                return Err(Failure::precondition(format!(
+                    "{}: class '{name}' declares cpus = {:?} but names no CPU",
+                    path.display(),
+                    class.cpus
+                )));
             }
             if cpus.is_empty() {
                 // Several bands are legal and necessary: one DMI product string often covers
@@ -163,25 +180,25 @@ impl CeilConfig {
     }
 }
 
-/// `0-3,12-15` and `0 1 2 3` both parse: a kernel that changes the format must degrade to a
-/// parse, not to a silent wrong class.
-fn parse_cpu_list(raw: &str) -> Vec<u32> {
+/// `0-3,12-15` and `0 1 2 3` both parse. `None` means a chunk was not a CPU list at all: a
+/// config typo must be refused rather than read as "no CPUs", and a kernel format change must
+/// degrade to "unknown", never to a silent wrong class.
+fn parse_cpu_list(raw: &str) -> Option<Vec<u32>> {
     let mut out = Vec::new();
     for chunk in raw.split([',', ' ']).filter(|c| !c.trim().is_empty()) {
         match chunk.split_once('-') {
             Some((a, b)) => {
-                if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-                    out.extend(a..=b);
+                let a: u32 = a.trim().parse().ok()?;
+                let b: u32 = b.trim().parse().ok()?;
+                if a > b {
+                    return None;
                 }
+                out.extend(a..=b);
             }
-            None => {
-                if let Ok(c) = chunk.trim().parse::<u32>() {
-                    out.push(c);
-                }
-            }
+            None => out.push(chunk.trim().parse().ok()?),
         }
     }
-    out
+    Some(out)
 }
 
 /// Ceiling for one cpufreq policy directory.
@@ -189,20 +206,20 @@ fn parse_cpu_list(raw: &str) -> Vec<u32> {
 /// `None` means no ceiling classes are declared, which is a legal host state: the caller
 /// reports `SKIPPED` and the pass touches nothing.
 pub fn want_for_policy(host: &dyn Host, ceil: &CeilConfig, policy_dir: &str) -> Result<Option<u32>> {
-    if let Some(raw) = host.read_opt(&format!("{policy_dir}/related_cpus")) {
-        let cpus = parse_cpu_list(&raw);
-        if !cpus.is_empty() {
-            if let Some(khz) = ceil.want_from_cpus(&cpus) {
-                return Ok(Some(khz));
-            }
-            // A band class does not name CPUs, so an unknown numbering is expected rather than
-            // a config error; the frequency band below answers instead. Without a band, a CPU
-            // set that matches nothing is a real mistake in a measured profile.
-            if !ceil.has_band() {
-                return Err(Failure::partial(format!(
-                    "{policy_dir}: CPUs {cpus:?} are not in any declared ceiling class"
-                )));
-            }
+    if let Some(raw) = host.read_opt(&format!("{policy_dir}/related_cpus"))
+        && let Some(cpus) = parse_cpu_list(&raw)
+        && !cpus.is_empty()
+    {
+        if let Some(khz) = ceil.want_from_cpus(&cpus) {
+            return Ok(Some(khz));
+        }
+        // A band class does not name CPUs, so an unknown numbering is expected rather than
+        // a config error; the frequency band below answers instead. Without a band, a CPU
+        // set that matches nothing is a real mistake in a measured profile.
+        if !ceil.has_band() {
+            return Err(Failure::partial(format!(
+                "{policy_dir}: CPUs {cpus:?} are not in any declared ceiling class"
+            )));
         }
     }
     let imax = host
@@ -264,8 +281,30 @@ mod tests {
 
     #[test]
     fn parses_both_list_forms() {
-        assert_eq!(parse_cpu_list("0 1 2 3"), vec![0, 1, 2, 3]);
-        assert_eq!(parse_cpu_list("0-3,12-15"), vec![0, 1, 2, 3, 12, 13, 14, 15]);
+        assert_eq!(parse_cpu_list("0 1 2 3"), Some(vec![0, 1, 2, 3]));
+        assert_eq!(parse_cpu_list("0-3,12-15"), Some(vec![0, 1, 2, 3, 12, 13, 14, 15]));
+        // A chunk that is not a CPU number is "unknown", never "no CPUs": reading it as an
+        // empty set would turn a mistyped measured class into a frequency band.
+        assert_eq!(parse_cpu_list("0\u{2013}3"), None);
+        assert_eq!(parse_cpu_list("0-3,cpu4"), None);
+        assert_eq!(parse_cpu_list("5-3"), None);
+    }
+
+    #[test]
+    fn a_mistyped_cpu_list_is_refused_not_read_as_a_band() {
+        // An en-dash looks like a range to a human and is not one to a parser. If it were
+        // accepted as an empty CPU set the class would apply by frequency to every policy.
+        let path = std::path::Path::new("ceil.toml");
+        for text in [
+            "[[class]]\nname = \"zen5\"\ncpus = [\"0\u{2013}3\"]\nkhz = 4700000\n",
+            "[[class]]\nname = \"zen5\"\ncpus = [\"0-3\", \"x\"]\nkhz = 4700000\n",
+            "[[class]]\nname = \"zen5\"\ncpus = [\"\"]\nkhz = 4700000\n",
+        ] {
+            assert!(
+                CeilConfig::parse(text, path).is_err(),
+                "a cpus list naming no CPU must be refused: {text:?}"
+            );
+        }
     }
 
     #[test]

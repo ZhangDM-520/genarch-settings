@@ -103,8 +103,13 @@ Recording the blocker is the honest result. A profile that never selects is not 
 selected and refuses:
 
 - a name that disagrees with the directory, or `[requires]` that is empty;
+- any profile other than the measured reference that does **not** declare
+  `status = "documented"` — `measured` is the default, and a profile that merely omits the field
+  would silently skip every rule below;
 - `status = "documented"` with no `source`, with a `mirror/`, a `managed/` record, a `[co]`
-  offset, a wake list or a USB list;
+  offset, a wake list, a USB list, or a `ceil.toml` class that names CPUs (a documented profile
+  declares clocks, not a stranger's core layout — a wrong core map caps the wrong cores on
+  another SKU that shares the product string);
 - any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in a documented
   profile;
 - a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), an empty class map,
