@@ -1,18 +1,26 @@
-# ASUS ROG Zephyrus G14 2024, GA403UV — Ryzen 9 8945HS.
+# ASUS ROG Zephyrus G14 2024, GA403UV — Ryzen 9 8945HS or Ryzen 7 8845HS.
 #
-# ASUS reports one DMI product string per board code, so the GA403UI and GA403UV are separate
-# profiles that happen to carry the same tuning: `[requires]` is an exact match, and a looser
-# rule would also catch the GA403UU, whose retail units ship a 5.1 GHz Ryzen 7 8845HS. That SKU
-# stays unshipped until a probe confirms its product string and its clock.
+# ASUS reports one DMI product string per board code, so each board is its own profile:
+# `[requires]` is an exact match, and a looser rule would apply one board's tuning to another.
+# Each board ships with **either** CPU — retail units of all three carry the 8845HS as well as
+# the 8945HS — which is why `ceil.toml` declares both clocks rather than one.
 #
+# A GA403UV SKU (GA403UV-Q75W) ships the 5.1 GHz 8845HS, so one 5.2 GHz ceiling would have
+# been refused by the kernel on that unit.
+
 # Documented, not measured (`docs/PROFILES.md`).
 status = "documented"
 source = [
-  "https://linux-hardware.org/?probe=0f6120fef2&log=dmidecode",
+  "https://linux-hardware.org/index.php?probe=1c37b817ef&log=dmidecode",
   "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-9-8945hs.html",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8845hs.html",
   "https://wiki.archlinux.org/title/Asusctl",
 ]
 
 [requires]
 product = "ROG Zephyrus G14 GA403UV_GA403UV"
 sys_vendor = "ASUSTeK COMPUTER INC."
+
+# On ASUS laptops `asusd`/`asusctl` owns `platform_profile`, and Power-Profiles-Daemon conflicts
+# with the profile management built into asusd. Recorded so an operator knows what a TLP or
+# manual-sysfs record would contend with; the engine manages neither.

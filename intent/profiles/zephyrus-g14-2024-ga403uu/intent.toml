@@ -1,0 +1,26 @@
+# ASUS ROG Zephyrus G14 2024, GA403UU — Ryzen 9 8945HS or Ryzen 7 8845HS.
+#
+# ASUS reports one DMI product string per board code, so each board is its own profile:
+# `[requires]` is an exact match, and a looser rule would apply one board's tuning to another.
+# Each board ships with **either** CPU — retail units of all three carry the 8845HS as well as
+# the 8945HS — which is why `ceil.toml` declares both clocks rather than one.
+#
+# The GA403UU was initially left unshipped for want of a probe; probe 5a998ab588 supplies its
+# product string, and its retail units cover both CPU variants like the other two boards.
+
+# Documented, not measured (`docs/PROFILES.md`).
+status = "documented"
+source = [
+  "https://linux-hardware.org/index.php?probe=5a998ab588&log=lscpu",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-9-8945hs.html",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8845hs.html",
+  "https://wiki.archlinux.org/title/Asusctl",
+]
+
+[requires]
+product = "ROG Zephyrus G14 GA403UU_GA403UU"
+sys_vendor = "ASUSTeK COMPUTER INC."
+
+# On ASUS laptops `asusd`/`asusctl` owns `platform_profile`, and Power-Profiles-Daemon conflicts
+# with the profile management built into asusd. Recorded so an operator knows what a TLP or
+# manual-sysfs record would contend with; the engine manages neither.

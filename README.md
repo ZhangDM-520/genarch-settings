@@ -69,8 +69,9 @@ merely not selected stays owned.
 | `framework-16-amd` | Framework Laptop 16, Ryzen 7040 (7840HS / 7940HS) | documented | `PROFILE`, `CEIL` (5.1 / 5.2 GHz bands) |
 | `elitebook-845-g11` | HP EliteBook 845 14" G11 (8840U/HS, 8640HS, 8440U) | documented | `PROFILE`, `CEIL` (three SKU bands) |
 | `zenbook-14-um3406` | ASUS Zenbook 14 OLED UM3406HA (8840HS) | documented | `PROFILE`, `CEIL` (5.1 GHz) |
-| `zephyrus-g14-2024-ga403ui` | ASUS ROG Zephyrus G14 2024 GA403UI (8945HS) | documented | `PROFILE`, `CEIL` (5.2 GHz) |
-| `zephyrus-g14-2024-ga403uv` | ASUS ROG Zephyrus G14 2024 GA403UV (8945HS) | documented | `PROFILE`, `CEIL` (5.2 GHz) |
+| `zephyrus-g14-2024-ga403ui` | ASUS ROG Zephyrus G14 2024 GA403UI (8945HS / 8845HS) | documented | `PROFILE`, `CEIL` (5.2 / 5.1 GHz) |
+| `zephyrus-g14-2024-ga403uv` | ASUS ROG Zephyrus G14 2024 GA403UV (8945HS / 8845HS) | documented | `PROFILE`, `CEIL` (5.2 / 5.1 GHz) |
+| `zephyrus-g14-2024-ga403uu` | ASUS ROG Zephyrus G14 2024 GA403UU (8945HS / 8845HS) | documented | `PROFILE`, `CEIL` (5.2 / 5.1 GHz) |
 
 A **documented** profile carries only values a publication states, so it ships no file, sets no
 curve offset and declares no power envelope — `CO`, `POWER`, `SMU` and `MIRROR` have nothing to
