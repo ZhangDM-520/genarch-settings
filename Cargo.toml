@@ -1,8 +1,10 @@
 [package]
 name = "genarch"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
-description = "Native tuning engine for one Arch host: intent, checks, convergence"
+description = "Native tuning engine for one Arch host: layered intent, profiles, checks, convergence"
+license = "MIT"
+repository = "https://github.com/ZhangDM-520/genarch-settings"
 publish = false
 
 [dependencies]

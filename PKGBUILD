@@ -1,14 +1,16 @@
 # Maintainer: the host owner
 pkgname=genarch
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Native tuning engine: declared intent, read-only judge, converge pass, ryzenadj settings"
+pkgdesc="Native tuning engine: layered intent, machine profiles, read-only judge, converge pass"
 arch=('x86_64')
 url="https://github.com/ZhangDM-520/genarch-settings"
-license=('GPL-2.0-or-later')
+license=('MIT')
 depends=('gcc-libs' 'ryzenadj' 'systemd' 'iw' 'wireless-regdb')
 makedepends=('cargo' 'rust')
 install=genarch.install
+# The machine selection is operator state: an upgrade must not overwrite the choice.
+backup=('etc/genarch/profile')
 options=(!lto)
 
 source=()
@@ -24,15 +26,20 @@ package() {
   cd "$startdir"
   install -Dm755 target/release/genarch "$pkgdir/usr/bin/genarch"
 
-  # The intent is package data: the engine reads it, never writes it.
+  # The intent is package data: the engine reads it, never writes it. Copied whole, so a new
+  # typed file or a new profile does not need an edit here.
   install -Dm644 Cargo.toml "$pkgdir/usr/lib/genarch/package.toml"
-  for f in intent.toml sysctl.toml ryzenadj.toml passes.toml; do
-    install -Dm644 "intent/$f" "$pkgdir/usr/lib/genarch/$f"
-  done
-  cp -a intent/managed "$pkgdir/usr/lib/genarch/managed"
-  cp -a intent/mirror "$pkgdir/usr/lib/genarch/mirror"
+  cp -a intent/. "$pkgdir/usr/lib/genarch/"
 
-  install -Dm644 AGENTS.md "$pkgdir/usr/share/doc/genarch/AGENTS.md"
-  install -Dm644 CONTEXT.md "$pkgdir/usr/share/doc/genarch/CONTEXT.md"
+  # This package was built for this host, so it selects this host's profile. A host whose DMI
+  # does not match reports PROFILE DRIFT instead of silently applying another machine's facts.
+  install -d "$pkgdir/etc/genarch"
+  printf 'profile = "zenbook-s16"\n' > "$pkgdir/etc/genarch/profile"
+  chmod 644 "$pkgdir/etc/genarch/profile"
+
+  for doc in AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
+    install -Dm644 "$doc" "$pkgdir/usr/share/doc/genarch/$doc"
+  done
   install -Dm644 docs/DESIGN.md "$pkgdir/usr/share/doc/genarch/DESIGN.md"
+  install -Dm755 install.sh "$pkgdir/usr/share/doc/genarch/install.sh"
 }
