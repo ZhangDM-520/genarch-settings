@@ -4,7 +4,11 @@ post_install() {
   /usr/bin/genarch apply || true
   systemctl daemon-reload
   udevadm control --reload || true
-  systemctl enable genarch.service genarch-ceil.timer || true
+  # The unit list has one home: ask the intent, do not restate it here.
+  units=$(/usr/bin/genarch units 2>/dev/null) || units=""
+  if [ -n "$units" ]; then
+    systemctl enable $units || true
+  fi
 }
 
 post_upgrade() {
@@ -12,5 +16,8 @@ post_upgrade() {
 }
 
 pre_remove() {
-  systemctl disable genarch.service genarch-ceil.timer 2>/dev/null || true
+  units=$(/usr/bin/genarch units 2>/dev/null) || units=""
+  if [ -n "$units" ]; then
+    systemctl disable $units 2>/dev/null || true
+  fi
 }

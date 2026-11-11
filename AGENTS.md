@@ -56,10 +56,10 @@ There is no lint config; `cargo clippy` is ad hoc.
 4. **`managed` owns one line** inside a foreign file, identified by an anchor pattern. Zero or
    several matches are hard errors and write nothing.
 5. **`check` + `report`** — one registry table (`check::REGISTRY`) drives report order, doc
-   anchors, apply reach and the JSON schema (2, with a top-level `profile`). Four rows (PROFILE,
-   MIRROR, MANAGED, SYNC, PRUNE) are computed from the same state `apply` executes — three from
-   `converge::plan`, PRUNE from the plan and the manifest — so "apply said ok but live is wrong"
-   is structurally impossible. `Reach::Intent` marks the rows no live observation can judge
+   anchors, apply reach and the JSON schema (2, with a top-level `profile`). Five rows (PROFILE,
+   MIRROR, MANAGED, SYNC, PRUNE) are computed from the same state `apply` executes — PROFILE from
+   the intent and the DMI, three from `converge::plan`, PRUNE from the plan and the manifest — so
+   "apply said ok but live is wrong" is structurally impossible. `Reach::Intent` marks the rows no live observation can judge
    (CO, POWER); their green means "declared", not "measured".
 6. **`ceil`, `ryzenadj`, `pass`** — the ceiling class map has one home shared by reader and writer;
    ryzenadj is argv-building only (packing arithmetic tested); `pass` dispatches boot/resume/ceil.
@@ -108,7 +108,10 @@ There is no lint config; `cargo clippy` is ad hoc.
 | `GENARCH_ROOT` rehearsals truncate kernel-attribute files | A rehearsal root is a normal filesystem; without `O_TRUNC` a shorter value left the old tail behind. Real `/sys` and `/proc` refuse `O_TRUNC`, so the flag is conditional on the root being `/`. |
 | One path, one owner: `mirror` and `managed` are disjoint | Overlap made a whole-file write fight a line patch on the same bytes. `Intent::validate` refuses it. Several managed records on one target stay legal — that is how `asusd.ron` is patched at five anchors. |
 | A **deselected** profile's mirrors stay owned (dormant) and are never pruned | With no profile selected the intent stops shipping `/etc/fstab`, and "no longer shipped" would prune it — deleting a system file because a config line went missing. `Intent::dormant` keeps them in `owned_targets`; only a profile that stops shipping a path hands it back. |
-| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan and re-shows it after the apply. `genarch apply` has no `--force`. |
+| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan, `converge::apply_exit` makes the finished apply exit 1, and `main` prints `SUMMARY … exit=1`. `genarch apply` has no `--force`. |
+| An `[omit]` tombstone reaches only the layers **below** the one declaring it | The operator has the last word; a base tombstone that removed an operator file would invert the precedence. A tombstone that names nothing below it is a load error, so a stale one cannot be silently ignored. |
+| The unit list has exactly one home (`[units] enabled`) | `genarch units` prints it and both install scripts enable that list; a renamed unit used to need edits in `genarch.install`, `install.sh` and the intent. |
+| `Some(0)` and `None` are different CO declarations | `None` leaves the firmware's offset alone; `Some(0)` writes zero, which clears it. `argv_plan` sends `--set-coall=0x00000000` for the latter — the old `all != 0` test could not tell them apart. |
 | A v2 `intent.toml` is refused, not silently stripped of its `prune` list | Schema 3 removed the declared removal list (the manifest owns pruning). `Meta` denies unknown fields, so an old intent fails loudly instead of applying without its removals. |
 | Scheduled passes take the apply lock | The 2-minute ceil timer and an operator's `apply` both write kernel attributes; without the lock the last writer wins silently. A held lock makes the pass log `pass skipped` and return clean — the timer runs again in two minutes. |
 | A refused write in a pass is a failure (exit 3), never `.is_ok()` | The `pass` code swallowed sysfs/procfs errors, so a pass exited 0 while the governor/wake/USB/sysctl value never moved. `a_refused_pass_write_is_a_failure_not_a_silent_skip` is the guard. |

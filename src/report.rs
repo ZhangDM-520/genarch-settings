@@ -121,7 +121,7 @@ fn profile_json(intent: &Intent, verdicts: &[Verdict]) -> String {
     };
     let matched = verdicts
         .iter()
-        .find(|v| v.id == "PROFILE")
+        .find(|v| v.id == check::PROFILE_ID)
         .map(|v| v.class != Class::Drift)
         .unwrap_or(false);
     let requires = profile

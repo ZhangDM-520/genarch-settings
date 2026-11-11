@@ -210,6 +210,20 @@ pub fn sysctl_drift(intent: &Intent, host: &dyn Host) -> Vec<SysctlDrift> {
         .collect()
 }
 
+/// The exit code an apply leaves behind.
+///
+/// A profile mismatch is drift even when every write succeeded: the engine converged the
+/// machine to *another* machine's facts, and that is what the operator has to fix. It does not
+/// refuse (a refusal would leave the host half-converged with no plan to read) and there is no
+/// `--force` — the exit code and the repeated note are the whole surface.
+pub fn apply_exit(plan: &Plan) -> crate::exit::Exit {
+    if plan.profile_mismatch.is_empty() {
+        crate::exit::Exit::Clean
+    } else {
+        crate::exit::Exit::Drift
+    }
+}
+
 /// What `apply` did, for the operator summary.
 #[derive(Debug, Default)]
 pub struct Outcome {

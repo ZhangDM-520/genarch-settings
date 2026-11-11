@@ -39,6 +39,11 @@ pub enum Verb {
     },
     /// Print the intent change that would match live. Writes nothing.
     Harvest,
+    /// Print the units the intent expects enabled, one per line.
+    ///
+    /// The install scripts call this instead of restating the list: a unit renamed in the
+    /// intent must not need a second edit in `genarch.install`.
+    Units,
     /// Run a scheduled pass. Called by systemd units and udev rules, not by hand.
     Converge {
         #[arg(value_enum)]

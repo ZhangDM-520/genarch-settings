@@ -41,9 +41,9 @@ pub fn argv_plan(config: &RyzenadjConfig) -> Vec<Vec<String>> {
         v
     };
 
-    if let Some(all) = config.co.all
-        && all != 0
-    {
+    // `Some(0)` is a declaration, not an absence: writing 0 clears whatever the firmware
+    // left, which is a different machine state from "leave it alone" (`None`).
+    if let Some(all) = config.co.all {
         calls.push(prog(&[format!("--set-coall={}", hex32(co_word(all)))]));
     }
     for (core, offset) in config.co.per_core.iter().flatten().enumerate() {
@@ -140,7 +140,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_global_offset_sends_nothing_but_zero_core_offsets_still_send() {
+    fn an_undeclared_offset_sends_nothing_but_a_declared_zero_does() {
+        // Absence and zero are different declarations: `None` leaves the firmware value,
+        // `Some(0)` clears it. The row's sentinel used to be `all == 0`, which could not tell
+        // the two apart.
         let config = RyzenadjConfig::default();
         assert!(argv_plan(&config).is_empty());
 
@@ -148,7 +151,13 @@ mod tests {
             co: CoConfig { all: Some(0), per_core: Some(vec![0]) },
             ..Default::default()
         };
-        assert_eq!(argv_plan(&config), vec![vec!["ryzenadj", "--set-coper=0x00000000"]]);
+        assert_eq!(
+            argv_plan(&config),
+            vec![
+                vec!["ryzenadj", "--set-coall=0x00000000"],
+                vec!["ryzenadj", "--set-coper=0x00000000"]
+            ]
+        );
     }
 
     #[test]

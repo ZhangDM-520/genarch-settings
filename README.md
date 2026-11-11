@@ -18,12 +18,14 @@ applied to another one.
 genarch report      [--json]     read-only verdicts; unprivileged OK
 genarch apply       [--dry-run]  converge live to intent; root
 genarch harvest                  proposal: the intent change that would match live
+genarch units                    the units the intent expects enabled, one per line
 genarch converge    <boot|resume|ceil>   the scheduled passes
 genarch import      <state> <profile-dir>  derive a profile from a legacy shell state tree
 ```
 
 Exit codes keep the shell engine's contract: `0` clean · `1` drift · `2` precondition · `3`
-partial. `apply` writes a dated pre-image beside every file it replaces, keeps the source mode
+partial. `apply` exits 1 when the selected profile does not match the machine, even though it
+applied — the writes landed against another machine's facts, and that is the drift to fix. `apply` writes a dated pre-image beside every file it replaces, keeps the source mode
 and owner, and refuses on any target it cannot classify.
 
 The report is eleven rows. `--json` is schema 2: a top-level `profile` object (`null` when none

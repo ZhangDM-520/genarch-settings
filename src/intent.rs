@@ -171,6 +171,70 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
 }
 
+/// Layer merge for the typed tables.
+///
+/// `self` is the layer above, `below` the value resolved so far: a field this layer declares
+/// wins, a field it omits keeps the one below. One implementation per type, so the rule cannot
+/// differ between two loaders that happen to merge the same shape.
+trait Merge: Sized {
+    fn over(self, below: Self) -> Self;
+}
+
+impl Merge for RyzenadjConfig {
+    fn over(self, below: Self) -> Self {
+        RyzenadjConfig {
+            co: self.co.over(below.co),
+            limits: self.limits.over(below.limits),
+            // A non-empty list replaces the one below; an absent list keeps it.
+            raw: if self.raw.is_empty() { below.raw } else { self.raw },
+        }
+    }
+}
+
+impl Merge for CoConfig {
+    fn over(self, below: Self) -> Self {
+        CoConfig {
+            all: self.all.or(below.all),
+            per_core: self.per_core.or(below.per_core),
+        }
+    }
+}
+
+impl Merge for LimitsConfig {
+    fn over(self, below: Self) -> Self {
+        LimitsConfig {
+            stapm: self.stapm.or(below.stapm),
+            fast: self.fast.or(below.fast),
+            slow: self.slow.or(below.slow),
+            stapm_time: self.stapm_time.or(below.stapm_time),
+            slow_time: self.slow_time.or(below.slow_time),
+            power_saving: self.power_saving.or(below.power_saving),
+        }
+    }
+}
+
+impl Merge for PassesConfig {
+    fn over(self, below: Self) -> Self {
+        PassesConfig {
+            wake_disarm: self.wake_disarm.or(below.wake_disarm),
+            usb_autosuspend: self.usb_autosuspend.or(below.usb_autosuspend),
+            idle_governor: self.idle_governor.or(below.idle_governor),
+            wifi_interface: self.wifi_interface.or(below.wifi_interface),
+            settle_secs: self.settle_secs.or(below.settle_secs),
+        }
+    }
+}
+
+impl Merge for SmuFields {
+    fn over(self, below: Self) -> Self {
+        SmuFields {
+            stapm: self.stapm.or(below.stapm),
+            fast: self.fast.or(below.fast),
+            slow: self.slow.or(below.slow),
+        }
+    }
+}
+
 /// The selected machine layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -330,11 +394,6 @@ impl Intent {
         }
         layers.push(Layer { root: overlay.to_path_buf(), meta: overlay_meta });
 
-        let omit = Omit {
-            mirror: layers.iter().flat_map(|l| l.meta.omit.mirror.iter().cloned()).collect(),
-            managed: layers.iter().flat_map(|l| l.meta.omit.managed.iter().cloned()).collect(),
-        };
-
         let mut intent = Intent {
             schema: SCHEMA_VERSION,
             base: base.to_path_buf(),
@@ -348,8 +407,8 @@ impl Intent {
         intent.ceil = load_ceil(&layers)?;
         intent.units = load_units(&layers);
         intent.smu = load_smu(&layers);
-        intent.mirror = load_mirror(&layers, &omit.mirror)?;
-        intent.managed = load_managed(&layers, &omit.managed)?;
+        intent.mirror = load_mirror(&layers)?;
+        intent.managed = load_managed(&layers)?;
         intent.dormant = dormant_mirrors(base, overlay, &layers);
         intent.validate()?;
         Ok(intent)
@@ -407,7 +466,7 @@ impl Intent {
                         "profile '{}' requires '{fact}', which is not a machine fact this engine \
                          can read ({})",
                         profile.name,
-                        MACHINE_FACTS.join(", ")
+                        machine_fact_names()
                     )));
                 }
             }
@@ -440,17 +499,25 @@ impl Intent {
     }
 }
 
-/// The machine facts a profile may require, mapped to the DMI attribute that carries them.
-pub const MACHINE_FACTS: &[&str] = &["product", "sys_vendor", "board", "bios_version"];
+/// The machine facts a profile may require, each with the DMI attribute that carries it.
+///
+/// One table: the accepted names and their paths used to be two lists that had to agree.
+const MACHINE_FACTS: &[(&str, &str)] = &[
+    ("product", "/sys/class/dmi/id/product_name"),
+    ("sys_vendor", "/sys/class/dmi/id/sys_vendor"),
+    ("board", "/sys/class/dmi/id/board_name"),
+    ("bios_version", "/sys/class/dmi/id/bios_version"),
+];
 
 fn machine_fact_path(fact: &str) -> Option<&'static str> {
-    match fact {
-        "product" => Some("/sys/class/dmi/id/product_name"),
-        "sys_vendor" => Some("/sys/class/dmi/id/sys_vendor"),
-        "board" => Some("/sys/class/dmi/id/board_name"),
-        "bios_version" => Some("/sys/class/dmi/id/bios_version"),
-        _ => None,
-    }
+    MACHINE_FACTS
+        .iter()
+        .find(|(name, _)| *name == fact)
+        .map(|(_, path)| *path)
+}
+
+fn machine_fact_names() -> String {
+    MACHINE_FACTS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ")
 }
 
 fn machine_fact(host: &dyn Host, fact: &str) -> Option<String> {
@@ -569,42 +636,29 @@ fn render_sysctl_value(key: &str, value: toml::Value, path: &Path) -> Result<Str
 }
 
 fn load_ryzenadj(layers: &[Layer]) -> Result<RyzenadjConfig> {
-    let mut out = RyzenadjConfig::default();
-    for layer in layers {
-        let Some(path) = layer_file(layer, "ryzenadj.toml") else { continue };
-        let one: RyzenadjConfig = parse(&read_text(&path)?, &path)?;
-        // Scalars merge per key; a list replaces the layer below wholesale.
-        out.co.all = one.co.all.or(out.co.all);
-        out.co.per_core = one.co.per_core.or(out.co.per_core);
-        out.limits.stapm = one.limits.stapm.or(out.limits.stapm);
-        out.limits.fast = one.limits.fast.or(out.limits.fast);
-        out.limits.slow = one.limits.slow.or(out.limits.slow);
-        out.limits.stapm_time = one.limits.stapm_time.or(out.limits.stapm_time);
-        out.limits.slow_time = one.limits.slow_time.or(out.limits.slow_time);
-        out.limits.power_saving = one.limits.power_saving.or(out.limits.power_saving);
-        if !one.raw.is_empty() {
-            out.raw = one.raw;
-        }
-    }
-    Ok(out)
+    merge_files(layers, "ryzenadj.toml")
 }
 
 fn load_passes(layers: &[Layer]) -> Result<PassesConfig> {
-    let mut out = PassesConfig::default();
+    merge_files(layers, "passes.toml")
+}
+
+/// Fold every layer that ships `file`, bottom to top, through [`Merge`].
+fn merge_files<T>(layers: &[Layer], file: &str) -> Result<T>
+where
+    T: Default + Merge + for<'de> Deserialize<'de>,
+{
+    let mut out = T::default();
     for layer in layers {
-        let Some(path) = layer_file(layer, "passes.toml") else { continue };
-        let one: PassesConfig = parse(&read_text(&path)?, &path)?;
-        out.wake_disarm = one.wake_disarm.or(out.wake_disarm);
-        out.usb_autosuspend = one.usb_autosuspend.or(out.usb_autosuspend);
-        out.idle_governor = one.idle_governor.or(out.idle_governor);
-        out.wifi_interface = one.wifi_interface.or(out.wifi_interface);
-        out.settle_secs = one.settle_secs.or(out.settle_secs);
+        let Some(path) = layer_file(layer, file) else { continue };
+        out = parse::<T>(&read_text(&path)?, &path)?.over(out);
     }
     Ok(out)
 }
 
-/// Units are unioned rather than replaced: a profile adds the units it expects enabled and
-/// cannot accidentally drop the engine's own pair from the report.
+/// Units are **unioned**, the one class that is not replace-or-per-key: an "expected enabled"
+/// entry is an expectation a layer adds, and a layer cannot withdraw another's. Replacing
+/// would let a profile silently drop `genarch.service` from the report.
 fn load_units(layers: &[Layer]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
@@ -619,9 +673,7 @@ fn load_units(layers: &[Layer]) -> Vec<String> {
 fn load_smu(layers: &[Layer]) -> SmuFields {
     let mut out = SmuFields::default();
     for layer in layers {
-        out.stapm = layer.meta.smu.stapm.clone().or(out.stapm);
-        out.fast = layer.meta.smu.fast.clone().or(out.fast);
-        out.slow = layer.meta.smu.slow.clone().or(out.slow);
+        out = layer.meta.smu.clone().over(out);
     }
     out
 }
@@ -661,27 +713,24 @@ fn dormant_mirrors(base: &Path, overlay: &Path, layers: &[Layer]) -> BTreeSet<St
     out
 }
 
-fn load_mirror(layers: &[Layer], omit: &[String]) -> Result<Vec<MirrorTarget>> {
-    let mut shipped: BTreeSet<String> = BTreeSet::new();
+fn load_mirror(layers: &[Layer]) -> Result<Vec<MirrorTarget>> {
     let mut by_live: BTreeMap<String, MirrorTarget> = BTreeMap::new();
-    // Later layers win, so the walk is in precedence order and insert overwrites.
+    // Later layers win, and a tombstone reaches only the layers *below* the one that declares
+    // it: the operator has the last word, so a base file cannot delete an operator's target.
     for layer in layers {
+        for live in &layer.meta.omit.mirror {
+            if by_live.remove(live).is_none() {
+                return Err(Failure::precondition(format!(
+                    "{}: [omit] mirror names {live}, which no layer below it ships",
+                    layer.root.display()
+                )));
+            }
+        }
         let dir = layer.root.join("mirror");
         for path in tree::walk(&dir) {
             let Some(live) = tree::live_path(&dir, &path) else { continue };
-            shipped.insert(live.clone());
             by_live.insert(live.clone(), mirror_target(&path, live)?);
         }
-    }
-    for live in omit {
-        // A tombstone that names nothing is a typo or a stale override. Either way the
-        // operator asked for something the engine cannot do, so it is refused, not ignored.
-        if !shipped.contains(live) {
-            return Err(Failure::precondition(format!(
-                "[omit] mirror names {live}, which no layer ships"
-            )));
-        }
-        by_live.remove(live);
     }
     Ok(by_live.into_values().collect())
 }
@@ -698,9 +747,18 @@ fn mirror_target(path: &Path, live: String) -> Result<MirrorTarget> {
     Ok(MirrorTarget { live, bytes, mode, origin: path.to_path_buf() })
 }
 
-fn load_managed(layers: &[Layer], omit: &[String]) -> Result<Vec<ManagedRecord>> {
+fn load_managed(layers: &[Layer]) -> Result<Vec<ManagedRecord>> {
     let mut records: BTreeMap<String, ManagedRecord> = BTreeMap::new();
     for layer in layers {
+        // Same rule as mirrors: a tombstone removes a record the layers below declare.
+        for name in &layer.meta.omit.managed {
+            if records.remove(name).is_none() {
+                return Err(Failure::precondition(format!(
+                    "{}: [omit] managed names '{name}', which no layer below it declares",
+                    layer.root.display()
+                )));
+            }
+        }
         let dir = layer.root.join("managed");
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
@@ -717,13 +775,6 @@ fn load_managed(layers: &[Layer], omit: &[String]) -> Result<Vec<ManagedRecord>>
                 record.name = stem.to_string();
             }
             records.insert(record.name.clone(), record);
-        }
-    }
-    for name in omit {
-        if records.remove(name).is_none() {
-            return Err(Failure::precondition(format!(
-                "[omit] managed names '{name}', which no layer declares"
-            )));
         }
     }
     Ok(records.into_values().collect())

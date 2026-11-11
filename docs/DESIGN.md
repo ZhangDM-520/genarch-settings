@@ -62,8 +62,10 @@ for the migration and is not part of the steady-state surface.
 
 Exit codes are inherited unchanged (0 clean / 1 drift / 2 precondition / 3 partial) because they
 are what timers, hooks and the runbook branch on. The *report surface* is free to change: it is
-now driven by the registry table, and the JSON document (`schema: 1`) is the machine seam that a
-documentation gate reads instead of parsing prose.
+now driven by the registry table, and the JSON document (`schema: 2`, with a top-level `profile`
+object) is the machine seam that a documentation gate reads instead of parsing prose.
+`apply` inherits the drift rule too: a profile that does not match this machine exits 1 after
+the apply, because the writes succeeded against another machine's facts.
 
 ## Why the passes are three and not one
 
@@ -133,6 +135,13 @@ wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was 
 - **Per-class merge, not whole-file.** Scalar maps merge per key (`sysctl`, `ryzenadj`, `passes`);
   lists replace wholesale; mirrors and managed records are whole-file with an `[omit]` tombstone.
   Copying sixteen keys to change three was the interface that made a fork cheaper than a config.
+- **A tombstone reaches only the layers below it.** `[omit]` in a layer removes a mirror or a
+  managed record declared under it; a base tombstone that matched an operator file would make
+  the base the last word. Every tombstone must name something below it, so a stale or
+  mistaken one is a load error.
+- **Units are the one union.** An "expected enabled" entry is an expectation a layer adds and
+  cannot withdraw another's; replacing would let a profile silently drop `genarch.service` from
+  the report. Every other class merges per key or replaces wholesale.
 - **Empty is legal, and it is not a guess.** With no profile the intent is the base, the rows that
   need a machine fact say SKIPPED, and no default is invented. A profile declares `[requires]`
   (DMI product/vendor); a mismatch is `PROFILE` drift (exit 1), not a refusal to load.

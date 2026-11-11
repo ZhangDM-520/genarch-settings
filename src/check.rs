@@ -90,14 +90,18 @@ pub struct Check {
 }
 
 macro_rules! check {
-    ($id:literal, $doc:literal, $reach:ident, $func:path) => {
+    ($id:expr, $doc:literal, $reach:ident, $func:path) => {
         Check { id: $id, doc: $doc, reach: Reach::$reach, run: $func }
     };
 }
 
+/// The row id for the selected machine layer, in one place: the registry and the JSON's
+/// `profile.matched` field look it up rather than restating the string.
+pub const PROFILE_ID: &str = "PROFILE";
+
 /// The registry. One row per knob; order is report order.
 pub const REGISTRY: &[Check] = &[
-    check!("PROFILE", "findings#intent", None, check_profile),
+    check!(PROFILE_ID, "findings#intent", None, check_profile),
     check!("MIRROR", "findings#intent", Full, check_mirror),
     check!("MANAGED", "findings#managed", Full, check_managed),
     check!("SYNC", "findings#writeback", Full, check_sync),
@@ -325,6 +329,16 @@ fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
             "no SMU field labels declared ([smu] in the intent)",
         ));
     };
+    // Without a declared envelope limit there is nothing to judge: the row read STAPM against
+    // "unset" and classified any number as ACCEPTED, which reported a profile-less host as if
+    // its power limits had been verified.
+    if ctx.intent.ryzenadj.limits.fast.is_none() {
+        return Ok(verdict(
+            "SMU",
+            Class::Skipped,
+            "no SMU envelope declared (the silicon is the profile's to describe)",
+        ));
+    }
     let result = ctx.host.run(&["ryzenadj".into(), "--info".into()]);
     let Ok(output) = result else {
         return Ok(verdict("SMU", Class::Skipped, "needs root (ryzenadj --info)"));

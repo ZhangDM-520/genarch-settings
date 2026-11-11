@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO="https://github.com/ZhangDM-520/genarch-settings"
-VERSION="0.2.0"
+VERSION="0.2.1"
 PREFIX="/usr"
 # Fixed, not derived from --prefix: the engine resolves /usr/lib/genarch itself; a relocated
 # intent is a run-time `GENARCH_INTENT` override, not an install layout.
@@ -103,6 +103,10 @@ fi
 
 [[ -f "$SOURCE/Cargo.toml" ]] || die "no Cargo.toml under $SOURCE"
 grep -q '^name = "genarch"' "$SOURCE/Cargo.toml" || die "$SOURCE is not the genarch tree"
+# The version is the tree's, not a second copy of it. Only the fetch path above needs the
+# constant this script shipped with.
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$SOURCE/Cargo.toml" | head -n1)"
+[[ -n $VERSION ]] || die "no version in $SOURCE/Cargo.toml"
 
 # Build inputs. A missing runtime dependency is reported, never fatal: the report marks the
 # rows it cannot judge as SKIPPED, and an install that refuses to proceed over a missing
@@ -127,20 +131,14 @@ run install -d "$PREFIX/bin"
 run install -Dm755 "$BIN" "$PREFIX/bin/genarch"
 
 say "installing the intent to $INTENT_DIR"
-# The whole tree, not a file list: a new typed file must not need an installer edit, and the
-# profile layer is intent too. Deleting first keeps a stale mirror from surviving an upgrade.
+# The whole tree, not a file list: a new typed file or a new profile must not need an
+# installer edit, and the profile layer is intent too. Deleting first keeps a stale mirror
+# from surviving an upgrade.
 run install -d "$INTENT_DIR"
 for dir in managed mirror profiles; do
   run rm -rf "$INTENT_DIR/$dir"
 done
-for file in intent.toml sysctl.toml ryzenadj.toml passes.toml ceil.toml; do
-  if [[ -f $SOURCE/intent/$file ]]; then
-    run install -Dm644 "$SOURCE/intent/$file" "$INTENT_DIR/$file"
-  fi
-done
-for dir in managed mirror profiles; do
-  run cp -a "$SOURCE/intent/$dir" "$INTENT_DIR/$dir"
-done
+run cp -a "$SOURCE/intent/." "$INTENT_DIR/"
 
 say "installing documentation to $DOC_DIR"
 for doc in AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
@@ -176,7 +174,16 @@ if (( ENABLE )); then
   run "$PREFIX/bin/genarch" apply
   run systemctl daemon-reload
   run udevadm control --reload
-  run systemctl enable --now genarch.service genarch-ceil.timer
+  # The unit list has one home: ask the intent, do not restate it here. Prefer a binary that
+  # exists — the build under --dry-run may not have produced one.
+  UNITS_CMD="$BIN"
+  [[ -x $UNITS_CMD ]] || UNITS_CMD="$PREFIX/bin/genarch"
+  mapfile -t UNITS < <("$UNITS_CMD" units 2>/dev/null || true)
+  if (( ${#UNITS[@]} )); then
+    run systemctl enable --now "${UNITS[@]}"
+  else
+    say "warning: the intent declares no units, or the engine cannot read it; nothing enabled"
+  fi
 fi
 
 say "done — read-only check: $PREFIX/bin/genarch report"

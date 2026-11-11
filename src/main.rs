@@ -45,6 +45,7 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
             let intent = Intent::load_default(&host)?;
             let (plan, outcome) = converge::apply(&intent, &host, dry_run)?;
             print_plan(&plan, dry_run);
+            let exit = converge::apply_exit(&plan);
             if !dry_run {
                 if !outcome.backups.is_empty() {
                     println!("BACKUPS {}", outcome.backups.len());
@@ -59,10 +60,18 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
                     println!("RELOAD {reload}");
                 }
                 println!(
-                    "SUMMARY planned={} applied={} failed=0 exit=0",
+                    "SUMMARY planned={} applied={} failed=0 exit={}",
                     plan.changes.len() + plan.sysctl.len(),
-                    outcome.applied.len()
+                    outcome.applied.len(),
+                    exit.code()
                 );
+            }
+            Ok(exit)
+        }
+        Verb::Units => {
+            let intent = Intent::load_default(&host)?;
+            for unit in &intent.units {
+                println!("{unit}");
             }
             Ok(Exit::Clean)
         }

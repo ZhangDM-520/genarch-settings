@@ -122,12 +122,31 @@ fn a_tombstone_that_names_nothing_is_refused() {
         .write_overlay("intent.toml", "[omit]\nmirror = [\"/etc/not-shipped.conf\"]\n");
 
     let err = tree.load().unwrap_err();
-    assert!(err.message.contains("no layer ships"), "{}", err.message);
+    assert!(err.message.contains("no layer below it ships"), "{}", err.message);
 
     let tree = Tree::new("bad-managed-tombstone")
         .write_overlay("intent.toml", "[omit]\nmanaged = [\"ghost\"]\n");
     let err = tree.load().unwrap_err();
-    assert!(err.message.contains("no layer declares"), "{}", err.message);
+    assert!(err.message.contains("no layer below it declares"), "{}", err.message);
+}
+
+#[test]
+fn a_tombstone_reaches_only_the_layers_below_it() {
+    // The operator has the last word: a base tombstone must not delete a file the operator
+    // ships. The base cannot ship anything the base could remove, so its tombstone is an error.
+    let tree = Tree::new("base-tombstone")
+        .write("mirror/etc/base.conf", "base\n")
+        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n[omit]\nmirror = [\"/etc/op.conf\"]\n"))
+        .write_overlay("mirror/etc/op.conf", "operator\n");
+    let err = tree.load().unwrap_err();
+    assert!(err.message.contains("no layer below it ships"), "{}", err.message);
+
+    // And an operator tombstone does remove the base's file.
+    let tree = Tree::new("operator-tombstone")
+        .write("mirror/etc/base.conf", "base\n")
+        .write_overlay("intent.toml", "[omit]\nmirror = [\"/etc/base.conf\"]\n");
+    let intent = tree.load().unwrap();
+    assert!(intent.mirror.is_empty(), "{:?}", intent.mirror);
 }
 
 #[test]
@@ -199,6 +218,46 @@ fn no_profile_selected_means_base_only_and_no_guessed_host_defaults() {
     assert_eq!(class("CEIL"), Class::Skipped);
     assert_eq!(class("CO"), Class::Skipped);
     assert_eq!(class("POWER"), Class::Skipped);
+    // SMU judges the live envelope against a declared limit. With no profile there is no
+    // limit, so it must not read "any number" as a verified power cap.
+    assert_eq!(class("SMU"), Class::Skipped);
+}
+
+#[test]
+fn units_are_unioned_across_layers() {
+    // The one class that is not replace-or-per-key: a layer adds an expectation, and a
+    // profile must not silently drop the engine's own units from the report.
+    let tree = Tree::new("units-union")
+        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n[units]\nenabled = [\"genarch.service\"]\n"))
+        .write_profile("p1", "intent.toml", "[units]\nenabled = [\"zenbook.service\", \"genarch.service\"]\n")
+        .select("p1");
+    let intent = tree.load().unwrap();
+    assert_eq!(intent.units, vec!["genarch.service".to_string(), "zenbook.service".to_string()]);
+}
+
+#[test]
+fn an_apply_on_a_mismatched_profile_still_runs_but_exits_drift() {
+    // No `--force` and no refusal: the operator has to see the plan. The exit code is what
+    // makes the wrong machine visible to a script.
+    let tree = Tree::new("mismatch-apply")
+        .write("mirror/etc/a.conf", "x\n")
+        .write_profile("p1", "intent.toml", "[requires]\nproduct = \"Right\"\n")
+        .select("p1");
+    let host = tree.host();
+    std::fs::create_dir_all(tree.dir.join("live/sys/class/dmi/id")).unwrap();
+    std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Wrong\n").unwrap();
+
+    let intent = tree.load().unwrap();
+    let (plan, outcome) = genarch::converge::apply(&intent, &host, false).unwrap();
+    assert!(!plan.profile_mismatch.is_empty(), "{plan:?}");
+    assert_eq!(outcome.applied.len(), 1, "the apply still converges the base");
+    assert_eq!(genarch::converge::apply_exit(&plan), genarch::Exit::Drift);
+
+    // A matching machine (or no profile) leaves the exit clean.
+    std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Right\n").unwrap();
+    let matching = tree.load().unwrap();
+    let (plan, _) = genarch::converge::apply(&matching, &host, false).unwrap();
+    assert_eq!(genarch::converge::apply_exit(&plan), genarch::Exit::Clean);
 }
 
 #[test]

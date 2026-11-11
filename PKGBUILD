@@ -1,6 +1,6 @@
 # Maintainer: the host owner
 pkgname=genarch
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Native tuning engine: layered intent, machine profiles, read-only judge, converge pass"
 arch=('x86_64')
