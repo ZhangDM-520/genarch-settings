@@ -58,7 +58,7 @@ genarch-settings completions fish > ~/.config/fish/completions/genarch-settings.
 On Arch, with the recipe next to the `gsa` recipe set:
 
 ```sh
-makepkg -f && sudo pacman -U genarch-settings-0.3.1-1-x86_64.pkg.tar.zst
+makepkg -f && sudo pacman -U genarch-settings-0.4.0-1-x86_64.pkg.tar.zst
 ```
 
 The package ships this host's profile **and** its selection (`/etc/genarch-settings/profile`, a pacman
