@@ -148,6 +148,11 @@ wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was 
 - **Ownership outlives selection.** A deselected profile's mirrors stay in the manifest as dormant
   ownership, because a lost selection must not prune `/etc/fstab`. Deleting the profile does hand
   its files back.
+- **A ceiling band is a SKU clock, not a core class.** A documented profile cannot know CPU
+  numbering, so a band class applies by `cpuinfo_max_freq` — the highest declared clock the unit
+  admits. Several bands per profile are therefore normal: one DMI product string routinely
+  covers SKUs 200–400 MHz apart, and declaring each clock lets one profile serve all of them
+  without capping a fast unit or writing a value above a slow one's admitted maximum.
 - **Ceilings and pass literals are data.** `ceil.toml` maps CPU sets to kHz (reader and writer share
   it), and `passes.toml` carries the wake list, USB ID, interface and settle delay. The code
   defaults are gone; there is nothing left to inherit silently.

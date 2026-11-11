@@ -78,7 +78,7 @@ impl CeilConfig {
             )));
         }
         let mut classes: Vec<CeilClass> = Vec::new();
-        let mut band_seen = false;
+        let mut bands: BTreeSet<u32> = BTreeSet::new();
         for class in file.class {
             let name = class.name.trim().to_string();
             if name.is_empty() {
@@ -108,14 +108,17 @@ impl CeilConfig {
                 cpus.extend(parse_cpu_list(chunk));
             }
             if cpus.is_empty() {
-                if band_seen {
+                // Several bands are legal and necessary: one DMI product string often covers
+                // SKUs at different clocks, and the band rule picks the largest one the machine
+                // actually admits. Two bands at the *same* clock would be an ambiguity, so that
+                // is refused.
+                if !bands.insert(class.khz) {
                     return Err(Failure::precondition(format!(
-                        "{}: class '{name}' is a second band class — frequency bands must not \
-                         overlap, so one band per machine is enough",
-                        path.display()
+                        "{}: class '{name}' repeats a band already declared at {} kHz",
+                        path.display(),
+                        class.khz
                     )));
                 }
-                band_seen = true;
             }
             classes.push(CeilClass { name, khz: class.khz, cpus });
         }
@@ -142,12 +145,13 @@ impl CeilConfig {
 
     /// The ceiling a policy should carry when only `cpuinfo_max_freq` is readable.
     ///
-    /// The largest declared ceiling that a policy admitting `imax` could plausibly have, and
-    /// the smallest class when even that is below every ceiling. This replaces the shell
-    /// engine's `> 4_400_000` threshold, which was one SoC's number compiled into the binary.
+    /// The largest declared ceiling the machine admits. This is what makes several bands
+    /// meaningful: a family sharing one DMI string declares each SKU's clock, and each unit
+    /// takes the highest one it can actually reach. `None` means the declared bands describe a
+    /// different machine — a ceiling above `imax` would be refused by the kernel, so it is
+    /// reported rather than attempted.
     pub fn fallback_from_cpuinfo(&self, imax: u32) -> Option<u32> {
-        let below = self.classes.iter().filter(|c| c.khz <= imax).map(|c| c.khz).max();
-        below.or_else(|| self.classes.iter().map(|c| c.khz).min())
+        self.classes.iter().filter(|c| c.khz <= imax).map(|c| c.khz).max()
     }
 
     /// One line naming the classes, for the CEIL verdict.
@@ -209,7 +213,13 @@ pub fn want_for_policy(host: &dyn Host, ceil: &CeilConfig, policy_dir: &str) -> 
                 "{policy_dir}: neither related_cpus nor cpuinfo_max_freq is readable"
             ))
         })?;
-    Ok(ceil.fallback_from_cpuinfo(imax))
+    ceil.fallback_from_cpuinfo(imax).map(Some).ok_or_else(|| {
+        Failure::partial(format!(
+            "{policy_dir}: admits {imax} kHz, below every declared ceiling ({}) — this profile \
+             does not describe this machine",
+            ceil.summary()
+        ))
+    })
 }
 
 /// Every cpufreq policy directory, sorted.
@@ -268,10 +278,21 @@ mod tests {
         assert_eq!(ceil.want_from_cpus(&[0, 8]), None);
         assert_eq!(ceil.fallback_from_cpuinfo(5_100_000), Some(5_100_000));
 
-        // A second band would overlap by construction, so it is refused rather than ordered.
+        // Several bands are how one DMI string covers SKUs at different clocks: each unit takes
+        // the highest band it admits. Repeating a clock is ambiguous, so that is refused.
+        let family = CeilConfig::parse(
+            "[[class]]\nname = \"fast\"\nkhz = 5100000\n[[class]]\nname = \"mid\"\nkhz = 4900000\n\
+             [[class]]\nname = \"low\"\nkhz = 4700000\n",
+            path,
+        )
+        .unwrap();
+        assert_eq!(family.fallback_from_cpuinfo(5_100_000), Some(5_100_000));
+        assert_eq!(family.fallback_from_cpuinfo(4_900_000), Some(4_900_000));
+        assert_eq!(family.fallback_from_cpuinfo(4_700_000), Some(4_700_000));
+        assert_eq!(family.fallback_from_cpuinfo(3_000_000), None);
         assert!(
             CeilConfig::parse(
-                "[[class]]\nname = \"a\"\nkhz = 5100000\n[[class]]\nname = \"b\"\nkhz = 4000000\n",
+                "[[class]]\nname = \"a\"\nkhz = 5100000\n[[class]]\nname = \"b\"\nkhz = 5100000\n",
                 path
             )
             .is_err()
@@ -324,8 +345,9 @@ mod tests {
         let ceil = two_classes();
         assert_eq!(ceil.fallback_from_cpuinfo(4_700_000), Some(4_700_000));
         assert_eq!(ceil.fallback_from_cpuinfo(3_200_000), Some(3_200_000));
-        // Below every declared ceiling: the smallest class, never zero and never a guess.
-        assert_eq!(ceil.fallback_from_cpuinfo(1_000), Some(3_200_000));
+        // Below every declared ceiling the machine is not one this map describes: `None`, so the
+        // caller reports it instead of writing a value the kernel would refuse.
+        assert_eq!(ceil.fallback_from_cpuinfo(1_000), None);
     }
 
     #[test]

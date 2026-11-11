@@ -1,0 +1,17 @@
+# HP EliteBook 845 (14 inch) G11 — AMD Hawk Point.
+#
+# One product string covers every SKU (8840U, 8840HS, 8640HS, 8440U), and `board_name` (8C6E) is
+# shared with the 16-inch 865 G11, so neither board nor version distinguishes them. The profile
+# matches on the product string alone and lets the ceiling bands handle the SKU spread.
+#
+# Documented, not measured (`docs/PROFILES.md`).
+status = "documented"
+source = [
+  "https://github.com/linuxhw/DMI/blob/master/Notebook/Hewlett-Packard/EliteBook/EliteBook%20845%2014%20inch%20G11%20Notebook%20PC/11640EE84476",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8840u.html",
+  "https://github.com/torvalds/linux/blob/master/drivers/platform/x86/hp/hp-wmi.c",
+]
+
+[requires]
+product = "HP EliteBook 845 14 inch G11 Notebook PC"
+sys_vendor = "HP"

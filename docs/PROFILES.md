@@ -47,18 +47,24 @@ the package.
 - `[requires]` — exact DMI strings. Get them from a hardware probe (`linux-hardware.org`) or the
   project's own device page, **never** from marketing copy. A near-miss string is a profile that
   never selects; a wrong one is a profile that selects the wrong machine.
-- `ceil.toml` — one **band** class per clock band:
+- `ceil.toml` — one **band** class per documented clock:
 
   ```toml
   [[class]]
-  name = "max"
+  name = "7840hs"
   khz = 5100000        # the documented maximum boost clock
+  [[class]]
+  name = "7940hs"
+  khz = 5200000
   ```
 
-  A class without `cpus` applies by frequency: the largest declared ceiling a policy's
+  A class without `cpus` applies by frequency: the highest declared ceiling a policy's
   `cpuinfo_max_freq` admits. This is the only honest way to cap a machine whose CPU numbering we
-  have never observed. A machine with two core types declares two bands; a class with `cpus`
-  (CPU-number based) is what a *measured* profile uses.
+  have never observed, and it is what makes **one profile per DMI string** correct even when
+  that string covers SKUs at several clocks — each unit takes the band it can reach, so nothing
+  is capped needlessly and no ceiling above `cpuinfo_max_freq` is ever attempted. Declare every
+  SKU clock the product string covers; two bands at the same clock are refused as ambiguous. A
+  class with `cpus` (CPU-number based) is what a *measured* profile uses.
 - `ryzenadj.toml` — only if the envelope is published **in ryzenadj terms** (`stapm`/`fast`/
   `slow`, mW). A vendor "TDP" is not one: leave it out and let `SMU` report `SKIPPED`.
 - `passes.toml` — only genuinely per-machine entries. `wifi_interface` and `settle_secs` are
@@ -85,7 +91,8 @@ selected and refuses:
   offset, a wake list or a USB list;
 - any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in a documented
   profile;
-- a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), or an empty class map.
+- a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), an empty class map,
+  or two bands at the same clock.
 
 Adding a profile is therefore: write the directory, run `cargo test --test profiles`, fix what it
 says. It fails on a *plausible* profile as well as a broken one, which is the point.

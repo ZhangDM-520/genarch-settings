@@ -1,0 +1,18 @@
+# One band per SKU clock the product string covers (HP QuickSpecs, CPU table):
+#   8840U / 8840HS  5.10 GHz
+#   8640HS          4.90 GHz
+#   8440U           4.70 GHz
+#
+# Each unit takes the highest band it admits, so a 8440U is capped at 4.7 (its own maximum) and
+# an 8840U at 5.1 — never a value above `cpuinfo_max_freq`, which the kernel would refuse.
+[[class]]
+name = "8840u-8840hs"
+khz = 5100000
+
+[[class]]
+name = "8640hs"
+khz = 4900000
+
+[[class]]
+name = "8440u"
+khz = 4700000
