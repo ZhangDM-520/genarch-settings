@@ -174,9 +174,11 @@ if (( ENABLE )); then
   run "$PREFIX/bin/genarch" apply
   run systemctl daemon-reload
   run udevadm control --reload
-  # The unit list has one home: ask the intent, do not restate it here. Prefer a binary that
-  # exists — the build under --dry-run may not have produced one.
+  # The unit list has one home: ask the intent, do not restate it here. A real run asks the
+  # binary it just built; a dry run asks the installed one, so a stale build in the tree
+  # cannot answer for the intent that is about to be installed.
   UNITS_CMD="$BIN"
+  (( DRY )) && UNITS_CMD="$PREFIX/bin/genarch"
   [[ -x $UNITS_CMD ]] || UNITS_CMD="$PREFIX/bin/genarch"
   mapfile -t UNITS < <("$UNITS_CMD" units 2>/dev/null || true)
   if (( ${#UNITS[@]} )); then
