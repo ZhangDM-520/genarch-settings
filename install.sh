@@ -6,17 +6,18 @@
 # binary outside the package manager; on Arch the PKGBUILD beside this file is the supported
 # path.
 #
-# The engine reads its intent from $INTENT_DIR (default /usr/lib/genarch-settings) and its machine
-# layer from <prefix>/etc/genarch-settings/profile. Nothing selects a profile for you: a fresh host runs
-# the base intent and reports PROFILE SKIPPED until an operator writes that line. The package
-# ships this host's selection; the installer is the portable path, so it does not guess.
+# The engine reads its intent from $INTENT_DIR (default /usr/lib/genarch-settings) and its
+# machine layer from <prefix>/etc/genarch-settings/profile. Nothing selects a profile for you: a
+# fresh host runs the base intent and reports PROFILE SKIPPED until an operator writes that
+# line. The package ships this host's selection; the installer is the portable path, so it does
+# not guess.
 set -euo pipefail
 
 REPO="https://github.com/ZhangDM-520/genarch-settings"
 VERSION="0.4.0"
 PREFIX="/usr"
-# Fixed, not derived from --prefix: the engine resolves /usr/lib/genarch-settings itself; a relocated
-# intent is a run-time `GENARCH_SETTINGS_INTENT` override, not an install layout.
+# Fixed, not derived from --prefix: the engine resolves /usr/lib/genarch-settings itself; a
+# relocated intent is a run-time `GENARCH_SETTINGS_INTENT` override, not an install layout.
 INTENT_DIR="/usr/lib/genarch-settings"
 DOC_DIR=""
 SOURCE=""
@@ -45,8 +46,8 @@ Selecting one for another laptop is not an error: `genarch-settings report` says
 exits 1, and `apply` still runs, because the operator has to be able to see it and fix it.
 
 The engine is idempotent: installing over an existing one re-plans and converges, it does not
-reset anything.  Uninstall: `systemctl disable` the units `genarch-settings units` prints, remove the
-binary, the intent directory and the documentation, then run `systemctl daemon-reload`.
+reset anything.  Uninstall: `systemctl disable` the units `genarch-settings units` prints, remove
+the binary, the intent directory and the documentation, then run `systemctl daemon-reload`.
 USAGE
 }
 
@@ -140,7 +141,8 @@ if [[ -z $SOURCE ]]; then
 fi
 
 [[ -f "$SOURCE/Cargo.toml" ]] || die "no Cargo.toml under $SOURCE"
-grep -q '^name = "genarch-settings"' "$SOURCE/Cargo.toml" || die "$SOURCE is not the genarch-settings tree"
+grep -q '^name = "genarch-settings"' "$SOURCE/Cargo.toml" \
+  || die "$SOURCE is not the genarch-settings tree"
 # The version is the tree's, not a second copy of it. Only the fetch path above needs the
 # constant this script shipped with.
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$SOURCE/Cargo.toml" | head -n1)"

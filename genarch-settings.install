@@ -1,5 +1,5 @@
-# The unit list has one home: the intent, through `genarch-settings units`. Restating it here would make
-# a renamed unit need two more edits, and a reordered `[units]` a silent mismatch.
+# The unit list has one home: the intent, through `genarch-settings units`. Restating it here
+# would make a renamed unit need two more edits, and a reordered `[units]` a silent mismatch.
 units() {
   /usr/bin/genarch-settings units 2>/dev/null || true
 }
