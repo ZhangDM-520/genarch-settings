@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO="https://github.com/ZhangDM-520/genarch-settings"
-VERSION="0.2.2"
+VERSION="0.3.0"
 PREFIX="/usr"
 # Fixed, not derived from --prefix: the engine resolves /usr/lib/genarch itself; a relocated
 # intent is a run-time `GENARCH_INTENT` override, not an install layout.
