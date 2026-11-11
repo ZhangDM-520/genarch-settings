@@ -7,7 +7,7 @@
 # Documented, not measured (`docs/PROFILES.md`).
 status = "documented"
 source = [
-  "https://linux-hardware.org/?probe=10624adf44",
+  "https://linux-hardware.org/index.php?probe=10624adf44",
   "https://raw.githubusercontent.com/linuxhw/DMI/master/Notebook/ASUSTek%20Computer/ASUS/ASUS%20Zenbook%2014%20UM3406HA_UM3406HA/A69EB03BB84E",
   "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8840hs.html",
   "https://wiki.archlinux.org/title/ASUS_Linux",
@@ -16,3 +16,7 @@ source = [
 [requires]
 product = "ASUS Zenbook 14 UM3406HA_UM3406HA"
 sys_vendor = "ASUSTeK COMPUTER INC."
+
+# On ASUS laptops `asusd`/`asusctl` owns `platform_profile`, and Power-Profiles-Daemon conflicts
+# with the profile management built into asusd. Recorded for the same reason as the HP note above;
+# the engine manages neither.

@@ -15,3 +15,8 @@ source = [
 [requires]
 product = "HP EliteBook 845 14 inch G11 Notebook PC"
 sys_vendor = "HP"
+
+# `hp-wmi` registers itself as the `platform_profile` handler, which is what Power-Profiles-Daemon
+# drives. Recorded so an operator adding a TLP or manual-sysfs record knows what it competes with;
+# the engine manages neither. (The kernel quirk tables in that driver are Omen/Victus-only, so
+# this machine is selected by `[requires]`, never by a kernel quirk.)
