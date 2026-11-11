@@ -25,6 +25,7 @@ restate a knob value in prose.
 | `./target/debug/genarch harvest` | the intent change that would match live |
 | `./target/debug/genarch units` | the units the intent expects enabled (the installers consume this) |
 | `./target/debug/genarch import <state> <profile-dir>` | derive a machine profile from a legacy shell `state/` tree |
+| `cargo test --test profiles` | the shipped-profile gate: every profile loads and keeps its provenance contract (`docs/PROFILES.md`) |
 | `sudo ./target/debug/genarch converge <boot\|resume\|ceil>` | the scheduled passes |
 
 Rehearsal without touching the machine: `GENARCH_ROOT=/path/to/copy` aims every live path at a
@@ -109,6 +110,8 @@ There is no lint config; `cargo clippy` is ad hoc.
 | A kernel attribute is written with **one** `write(2)`, never `write_all` | `sysfs` `store()` runs once per syscall and is not a stream: a short write followed by the remainder becomes a second, unrelated value (EINVAL or a malformed setting). `write_in_place` issues one `write` and errors on a short count. |
 | `GENARCH_ROOT` rehearsals truncate kernel-attribute files | A rehearsal root is a normal filesystem; without `O_TRUNC` a shorter value left the old tail behind. Real `/sys` and `/proc` refuse `O_TRUNC`, so the flag is conditional on the root being `/`. |
 | One path, one owner: `mirror` and `managed` are disjoint | Overlap made a whole-file write fight a line patch on the same bytes. `Intent::validate` refuses it. Several managed records on one target stay legal — that is how `asusd.ron` is patched at five anchors. |
+| A **documented** profile carries no `mirror/`, no `[co]`, no wake/USB list, and must cite a source | A value a publication cannot state is a measurement; shipping it in a documented profile is how a "portable" profile silently becomes one laptop's. `tests/profiles.rs` refuses it, and `status = "documented"` without `source` fails at load. `docs/PROFILES.md` is the contract. |
+| A ceiling class may omit `cpus` (a **band** class) | A machine this repository has not booted has no known CPU numbering. The band applies by `cpuinfo_max_freq` (`fallback_from_cpuinfo`); a class *with* `cpus` is what a measured profile uses, and a CPU set matching nothing is still an error when no band exists. One band per machine — two would overlap by construction. |
 | A **deselected** profile's mirrors stay owned (dormant) and are never pruned | With no profile selected the intent stops shipping `/etc/fstab`, and "no longer shipped" would prune it — deleting a system file because a config line went missing. `Intent::dormant` keeps them in `owned_targets`; only a profile that stops shipping a path hands it back. |
 | A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan, `converge::apply_exit` makes the finished apply exit 1, and `main` prints `SUMMARY … exit=1`. `genarch apply` has no `--force`. |
 | An `[omit]` tombstone reaches only the layers **below** the one declaring it | The operator has the last word; a base tombstone that removed an operator file would invert the precedence. A tombstone that names nothing below it is a load error, so a stale one cannot be silently ignored. |

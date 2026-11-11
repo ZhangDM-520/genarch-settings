@@ -24,13 +24,27 @@ pub struct CeilConfig {
     pub classes: Vec<CeilClass>,
 }
 
-/// One class: a CPU set and the ceiling those cores take, in kHz.
+/// One class: a ceiling in kHz, and the CPU set it applies to.
+///
+/// An empty CPU set is a **band class**: it applies by frequency, not by core identity, for a
+/// machine whose CPU numbering is unknown (any machine this repository has not booted).
+/// [`CeilConfig::fallback_from_cpuinfo`] is the rule it uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CeilClass {
     pub name: String,
     pub khz: u32,
     pub cpus: BTreeSet<u32>,
 }
+
+impl CeilClass {
+    pub fn is_band(&self) -> bool {
+        self.cpus.is_empty()
+    }
+}
+
+/// A plausible ceiling, kHz. The floor catches the `470000` / `4700000` unit mistake (which
+/// silently caps a machine at 470 MHz); the ceiling catches the same mistake upward.
+const KHZ_RANGE: std::ops::RangeInclusive<u32> = 500_000..=10_000_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +57,8 @@ struct File {
 #[serde(deny_unknown_fields)]
 struct ClassFile {
     name: String,
+    /// Absent or empty means a band class (see [`CeilClass`]).
+    #[serde(default)]
     cpus: Vec<String>,
     khz: u32,
 }
@@ -62,6 +78,7 @@ impl CeilConfig {
             )));
         }
         let mut classes: Vec<CeilClass> = Vec::new();
+        let mut band_seen = false;
         for class in file.class {
             let name = class.name.trim().to_string();
             if name.is_empty() {
@@ -76,10 +93,14 @@ impl CeilConfig {
                     path.display()
                 )));
             }
-            if class.khz == 0 {
+            if !KHZ_RANGE.contains(&class.khz) {
                 return Err(Failure::precondition(format!(
-                    "{}: class '{name}' declares no khz",
-                    path.display()
+                    "{}: class '{name}' declares {khz} kHz, outside the plausible range \
+                     {}-{} kHz (a unit mistake, not a ceiling)",
+                    path.display(),
+                    KHZ_RANGE.start(),
+                    KHZ_RANGE.end(),
+                    khz = class.khz
                 )));
             }
             let mut cpus = BTreeSet::new();
@@ -87,10 +108,14 @@ impl CeilConfig {
                 cpus.extend(parse_cpu_list(chunk));
             }
             if cpus.is_empty() {
-                return Err(Failure::precondition(format!(
-                    "{}: class '{name}' names no CPUs",
-                    path.display()
-                )));
+                if band_seen {
+                    return Err(Failure::precondition(format!(
+                        "{}: class '{name}' is a second band class — frequency bands must not \
+                         overlap, so one band per machine is enough",
+                        path.display()
+                    )));
+                }
+                band_seen = true;
             }
             classes.push(CeilClass { name, khz: class.khz, cpus });
         }
@@ -108,6 +133,11 @@ impl CeilConfig {
             .filter(|class| cpus.iter().any(|cpu| class.cpus.contains(cpu)))
             .map(|class| class.khz)
             .max()
+    }
+
+    /// Whether any class applies by frequency rather than by CPU identity.
+    pub fn has_band(&self) -> bool {
+        self.classes.iter().any(CeilClass::is_band)
     }
 
     /// The ceiling a policy should carry when only `cpuinfo_max_freq` is readable.
@@ -158,11 +188,17 @@ pub fn want_for_policy(host: &dyn Host, ceil: &CeilConfig, policy_dir: &str) -> 
     if let Some(raw) = host.read_opt(&format!("{policy_dir}/related_cpus")) {
         let cpus = parse_cpu_list(&raw);
         if !cpus.is_empty() {
-            return ceil.want_from_cpus(&cpus).map(Some).ok_or_else(|| {
-                Failure::partial(format!(
+            if let Some(khz) = ceil.want_from_cpus(&cpus) {
+                return Ok(Some(khz));
+            }
+            // A band class does not name CPUs, so an unknown numbering is expected rather than
+            // a config error; the frequency band below answers instead. Without a band, a CPU
+            // set that matches nothing is a real mistake in a measured profile.
+            if !ceil.has_band() {
+                return Err(Failure::partial(format!(
                     "{policy_dir}: CPUs {cpus:?} are not in any declared ceiling class"
-                ))
-            });
+                )));
+            }
         }
     }
     let imax = host
@@ -220,6 +256,67 @@ mod tests {
     fn parses_both_list_forms() {
         assert_eq!(parse_cpu_list("0 1 2 3"), vec![0, 1, 2, 3]);
         assert_eq!(parse_cpu_list("0-3,12-15"), vec![0, 1, 2, 3, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn a_band_class_applies_by_frequency_not_by_cpu_identity() {
+        // A machine we have not booted has no known CPU numbering, so a documented profile
+        // declares the clock band instead. It must never match by CPU set, only by frequency.
+        let path = std::path::Path::new("ceil.toml");
+        let ceil = CeilConfig::parse("[[class]]\nname = \"max\"\nkhz = 5100000\n", path).unwrap();
+        assert!(ceil.has_band());
+        assert_eq!(ceil.want_from_cpus(&[0, 8]), None);
+        assert_eq!(ceil.fallback_from_cpuinfo(5_100_000), Some(5_100_000));
+
+        // A second band would overlap by construction, so it is refused rather than ordered.
+        assert!(
+            CeilConfig::parse(
+                "[[class]]\nname = \"a\"\nkhz = 5100000\n[[class]]\nname = \"b\"\nkhz = 4000000\n",
+                path
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_band_profile_reads_a_policy_with_known_cpus() {
+        // related_cpus is always readable on a real machine, so the band must still answer when
+        // the CPU set matches no class.
+        use crate::host::FixtureHost;
+        let dir = std::env::temp_dir().join(format!("genarch-ceil-band-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = "/sys/devices/system/cpu/cpufreq/policy0";
+        std::fs::create_dir_all(dir.join(policy.trim_start_matches('/'))).unwrap();
+        std::fs::write(dir.join(policy.trim_start_matches('/')).join("related_cpus"), "0-15\n").unwrap();
+        std::fs::write(
+            dir.join(policy.trim_start_matches('/')).join("cpuinfo_max_freq"),
+            "5100000\n",
+        )
+        .unwrap();
+        let host = FixtureHost::new(&dir);
+
+        let ceil = CeilConfig::parse("[[class]]\nname = \"max\"\nkhz = 5100000\n", std::path::Path::new("c"))
+            .unwrap();
+        assert_eq!(want_for_policy(&host, &ceil, policy).unwrap(), Some(5_100_000));
+
+        // The same readback against explicit classes that cover none of these CPUs is a real
+        // error: a measured profile that lost a core is not something to smooth over.
+        let explicit = CeilConfig::parse(
+            "[[class]]\nname = \"a\"\ncpus = [\"20-23\"]\nkhz = 5100000\n",
+            std::path::Path::new("c"),
+        )
+        .unwrap();
+        assert!(want_for_policy(&host, &explicit, policy).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_implausible_ceiling_is_a_unit_mistake() {
+        let path = std::path::Path::new("ceil.toml");
+        // 470000 is 4700000 with a digit missing.
+        assert!(CeilConfig::parse("[[class]]\nname = \"a\"\nkhz = 470000\n", path).is_err());
+        assert!(CeilConfig::parse("[[class]]\nname = \"a\"\nkhz = 47000000\n", path).is_err());
+        assert!(CeilConfig::parse("[[class]]\nname = \"a\"\nkhz = 4700000\n", path).is_ok());
     }
 
     #[test]

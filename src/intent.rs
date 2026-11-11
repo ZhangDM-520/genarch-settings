@@ -235,12 +235,40 @@ impl Merge for SmuFields {
     }
 }
 
+/// How a profile's values came to be.
+///
+/// This is the honesty field, not decoration: a `Documented` profile may only carry values a
+/// publication states, so it ships no `/etc/fstab`, no user path and no measured curve offset.
+/// The gate (`tests/profiles.rs`) enforces that, and a reader knows which rows were ever
+/// measured on real hardware.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ProfileStatus {
+    /// Researched from published sources; every value cites one.
+    Documented,
+    /// Measured on the machine. The default, because a profile with no claim is a measurement.
+    #[default]
+    Measured,
+}
+
+impl ProfileStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProfileStatus::Documented => "documented",
+            ProfileStatus::Measured => "measured",
+        }
+    }
+}
+
 /// The selected machine layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     pub name: String,
     /// Machine facts the profile is written for, as `(fact, expected value)`.
     pub requires: BTreeMap<String, String>,
+    pub status: ProfileStatus,
+    /// Where the documented values came from. Empty is legal only for a measured profile.
+    pub source: Vec<String>,
 }
 
 /// The resolved intent.
@@ -283,6 +311,8 @@ struct Meta {
     schema: Option<u32>,
     omit: Omit,
     requires: BTreeMap<String, String>,
+    status: Option<ProfileStatus>,
+    source: Vec<String>,
     units: Units,
     smu: SmuFields,
 }
@@ -343,17 +373,14 @@ impl Intent {
                 )));
             }
         }
-        if !base_meta.requires.is_empty() {
-            return Err(Failure::precondition(format!(
-                "{}: only a profile may declare [requires]",
-                base_meta_path.display()
-            )));
-        }
+        refuse_profile_only_fields(&base_meta, &base_meta_path)?;
 
         let mut layers = vec![Layer { root: base.to_path_buf(), meta: base_meta }];
         let mut profile = None;
         if let Some(name) = selection(overlay)? {
             let mut requires = BTreeMap::new();
+            let mut status = ProfileStatus::Measured;
+            let mut source: Vec<String> = Vec::new();
             let mut selected = false;
             // A profile may live in the package or be the operator's own; both are layers, so
             // an operator adding one file to a package profile does not shadow the whole tree.
@@ -368,6 +395,12 @@ impl Intent {
                 let meta = read_meta(&root.join("intent.toml"), false)?;
                 optional_schema(&meta, &root.join("intent.toml"))?;
                 requires.extend(meta.requires.iter().map(|(k, v)| (k.clone(), v.clone())));
+                // The operator's own copy of a profile is the last word, so its status and
+                // sources win; a package profile below it only fills what is still unset.
+                if meta.status.is_some() || !meta.source.is_empty() {
+                    status = meta.status.unwrap_or(status);
+                    source = meta.source.clone();
+                }
                 layers.push(Layer { root, meta });
                 selected = true;
             }
@@ -380,18 +413,13 @@ impl Intent {
                     overlay.display()
                 )));
             }
-            profile = Some(Profile { name, requires });
+            profile = Some(Profile { name, requires, status, source });
         }
 
         let overlay_meta_path = overlay.join("intent.toml");
         let overlay_meta = read_meta(&overlay_meta_path, false)?;
         optional_schema(&overlay_meta, &overlay_meta_path)?;
-        if !overlay_meta.requires.is_empty() {
-            return Err(Failure::precondition(format!(
-                "{}: only a profile may declare [requires]",
-                overlay_meta_path.display()
-            )));
-        }
+        refuse_profile_only_fields(&overlay_meta, &overlay_meta_path)?;
         layers.push(Layer { root: overlay.to_path_buf(), meta: overlay_meta });
 
         let mut intent = Intent {
@@ -460,6 +488,14 @@ impl Intent {
             ));
         }
         if let Some(profile) = &self.profile {
+            // A documented profile's whole claim is that every value is traceable. Without a
+            // source that claim is unverifiable, so it is refused rather than trusted.
+            if profile.status == ProfileStatus::Documented && profile.source.is_empty() {
+                return Err(Failure::precondition(format!(
+                    "profile '{}' is status = \"documented\" but names no source",
+                    profile.name
+                )));
+            }
             for fact in profile.requires.keys() {
                 if machine_fact_path(fact).is_none() {
                     return Err(Failure::precondition(format!(
@@ -536,6 +572,25 @@ fn read_meta(path: &Path, required: bool) -> Result<Meta> {
     }
     let text = read_text(path)?;
     parse(&text, path)
+}
+
+/// `[requires]`, `status` and `source` describe a machine, so only a profile may declare them.
+/// Allowing them on the base would make "this package is for laptop X" a property of the
+/// package rather than of the layer that selects it.
+fn refuse_profile_only_fields(meta: &Meta, path: &Path) -> Result<()> {
+    if !meta.requires.is_empty() {
+        return Err(Failure::precondition(format!(
+            "{}: only a profile may declare [requires]",
+            path.display()
+        )));
+    }
+    if meta.status.is_some() || !meta.source.is_empty() {
+        return Err(Failure::precondition(format!(
+            "{}: only a profile may declare `status` or `source`",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// A non-base layer may omit `schema`; when it declares one it must speak ours.

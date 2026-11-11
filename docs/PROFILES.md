@@ -1,0 +1,111 @@
+# Profiles
+
+A **profile** is the machine layer: a directory under `intent/profiles/<slug>/` that carries
+everything true of one laptop and nothing true of another. `/etc/genarch/profile` selects it
+(`profile = "<slug>"`), and `/sys/class/dmi/id` decides whether it is the right machine
+(`[requires]`, reported as the `PROFILE` row).
+
+This page is the contract for writing one. It exists because the alternative — a profile that
+inherits this project's own laptop — is exactly what made 0.1.x non-portable.
+
+## Naming
+
+`<vendor>-<model>-<generation-or-sku>`, lowercase, hyphenated: `framework-13-amd-7040`,
+`thinkpad-z13-gen2`, `zephyrus-g14-2024`, `elitebook-845-g11`, `zenbook-s16`.
+
+The directory name **is** the profile name, and it is what the operator writes in
+`/etc/genarch/profile`. Rename the directory and you have renamed the profile.
+
+## Provenance: the rule that decides what may be in a profile
+
+Every value falls into one of three classes. The class decides whether it may ship.
+
+| Class | What it is | Examples | In a **documented** profile? |
+|---|---|---|---|
+| **D** documented | A publication states it | DMI strings, CPU model, core count, boost clock, platform TDP envelope, vendor tooling | yes, with a citation |
+| **C** community | Someone measured or reported it | a safe sustained PPT, a wake-device list, a suspend quirk | yes, marked, never promoted to D |
+| **L** live-only | Only obtainable on the machine in hand | `/etc/fstab` UUIDs, `/home/<user>`, `/dev/nvme0n1p3`, curve offsets from a silicon sweep | **never** |
+
+A profile declares how it was made:
+
+```toml
+# intent/profiles/<slug>/intent.toml
+status = "documented"          # or "measured" (the default)
+source = ["https://…"]         # required for status = "documented"
+
+[requires]
+product = "<exact /sys/class/dmi/id/product_name>"
+sys_vendor = "<exact /sys/class/dmi/id/sys_vendor>"
+```
+
+`status`/`source`/`[requires]` may appear **only** in a profile; the base and the operator layer
+refuse them, because "this package is for laptop X" is a property of the selected layer, not of
+the package.
+
+## What a documented profile carries
+
+- `[requires]` — exact DMI strings. Get them from a hardware probe (`linux-hardware.org`) or the
+  project's own device page, **never** from marketing copy. A near-miss string is a profile that
+  never selects; a wrong one is a profile that selects the wrong machine.
+- `ceil.toml` — one **band** class per clock band:
+
+  ```toml
+  [[class]]
+  name = "max"
+  khz = 5100000        # the documented maximum boost clock
+  ```
+
+  A class without `cpus` applies by frequency: the largest declared ceiling a policy's
+  `cpuinfo_max_freq` admits. This is the only honest way to cap a machine whose CPU numbering we
+  have never observed. A machine with two core types declares two bands; a class with `cpus`
+  (CPU-number based) is what a *measured* profile uses.
+- `ryzenadj.toml` — only if the envelope is published **in ryzenadj terms** (`stapm`/`fast`/
+  `slow`, mW). A vendor "TDP" is not one: leave it out and let `SMU` report `SKIPPED`.
+- `passes.toml` — only genuinely per-machine entries. `wifi_interface` and `settle_secs` are
+  fine; `wake_disarm` and `usb_autosuspend` are live observations and belong in a measured
+  profile.
+
+It carries **no** `mirror/` and **no** `managed/`: a file deployed to a machine we have never
+booted is unverifiable by construction, and the base already ships everything generic.
+
+## What a measured profile adds
+
+Everything above, plus: `[co]` offsets from an actual sweep, `wake_disarm` from
+`/proc/acpi/wakeup`, `usb_autosuspend` from `lsusb`, `ceil.toml` classes with explicit CPU sets,
+and `mirror/`/`managed/` entries for this machine's own files. That is what
+`intent/profiles/zenbook-s16/` is.
+
+## The gate
+
+`cargo test --test profiles` loads **every** directory under `intent/profiles/` as if it were
+selected and refuses:
+
+- a name that disagrees with the directory, or `[requires]` that is empty;
+- `status = "documented"` with no `source`, with a `mirror/`, a `managed/` record, a `[co]`
+  offset, a wake list or a USB list;
+- any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in a documented
+  profile;
+- a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), or an empty class map.
+
+Adding a profile is therefore: write the directory, run `cargo test --test profiles`, fix what it
+says. It fails on a *plausible* profile as well as a broken one, which is the point.
+
+## Selecting it
+
+```sh
+printf 'profile = "framework-13-amd-7040"\n' | sudo tee /etc/genarch/profile
+sudo genarch apply --dry-run    # read the plan
+sudo genarch apply
+genarch report                  # PROFILE must be OK; the rest says what was judged
+```
+
+On a machine whose DMI does not match, `PROFILE` reports DRIFT and `apply` exits 1 — the writes
+still happen (you have to be able to see the plan), but nothing pretends the profile fits. There
+is no `--force`.
+
+## Rows a documented profile leaves unjudged
+
+`CO`, `POWER` and `SMU` report `SKIPPED` unless the profile declares an offset, the power-saving
+flag or an envelope. `MIRROR` counts zero because a documented profile ships no file. That is the
+honest reading of "documented": `CEIL` and `PROFILE` are green because they were verified against
+a publication, and everything measured on real hardware is left to the operator who owns it.

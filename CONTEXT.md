@@ -32,6 +32,11 @@ user's paths. The base carries only what is true of any AMD laptop. **Empty is l
 profile selected, absent sections do nothing and the rows that depend on them report `SKIPPED` —
 there are no host defaults in the binary.
 
+A profile also states how it came to be: **documented** (every value published and cited) or
+**measured** (observed on the machine). The distinction is load-bearing, not cosmetic — a
+documented profile ships no `mirror/`, no curve offset and no wake list, because those cannot be
+published. `docs/PROFILES.md` is the contract.
+
 **Mirror** — a file the engine deploys byte for byte and does not interpret. It is how the
 engine owns `/etc/fstab`-shaped files without becoming a parser for every vendor format.
 
