@@ -189,7 +189,7 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
         "power_save".to_string(),
         "on".to_string(),
     ];
-    if host.run(&argv).map(|o| o.status.success()).unwrap_or(false) {
+    if host.run(&argv).map(|o| o.success).unwrap_or(false) {
         report.say(format!("{iface} power_save=on"));
     }
 

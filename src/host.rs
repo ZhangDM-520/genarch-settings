@@ -18,6 +18,12 @@
 //! - **Mode is explicit.** Source mode wins for a new target; an existing target keeps
 //!   its mode unless the caller says otherwise (an exec-bit regression is invisible until
 //!   a unit fails with 203/EXEC).
+//! - **One write policy.** [`write_file`] owns temp naming, mode and owner inheritance, the
+//!   `system-sleep/` staging rule and the kernel in-place branch. [`FixtureHost`] runs that
+//!   same policy over [`RecordingFs`], so the gate cannot pass on a write the live apply
+//!   would not perform.
+//! - **Programs are not `std::process::Output`.** [`RunResult`] is constructible by both
+//!   adapters, so no adapter has to fork a process to fake one.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -55,25 +61,316 @@ fn staging_live(live: &str) -> Option<&'static str> {
     }
 }
 
-/// Create the sibling temp file with `O_EXCL|O_NOFOLLOW`. A stale temp from a killed run
-/// carries our pid in its name, so it is ours to replace.
-fn open_new(path: &Path) -> Result<std::fs::File> {
-    let open = || {
-        std::fs::OpenOptions::new()
+/// One open file, as the write policy sees it.
+///
+/// Mode and ownership are set here, on the descriptor, never on the path: a path-based
+/// `chmod` after `close` follows a symlink planted in a user-writable directory.
+pub trait FsFile {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    /// A single `write(2)`. A `sysfs` attribute's `store()` runs once per syscall and is not a
+    /// stream, so a kernel write must never be split into a write plus a remainder.
+    fn write_once(&mut self, bytes: &[u8]) -> std::io::Result<usize>;
+    fn set_mode(&self, mode: u32) -> std::io::Result<()>;
+    fn set_owner(&self, uid: u32, gid: u32) -> std::io::Result<()>;
+    fn sync_all(&self) -> std::io::Result<()>;
+}
+
+/// What a target's metadata contributes to a write: the mode it keeps and the owner it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileMeta {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// The primitives [`write_file`] is expressed over. [`SystemFs`] is the machine;
+/// [`RecordingFs`] performs the same operations for the fixture and keeps a log of them.
+pub trait Fs {
+    fn meta(&self, path: &Path) -> Option<FileMeta>;
+    fn mkdir_all(&self, path: &Path) -> std::io::Result<()>;
+    fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn FsFile>>;
+    fn open_existing(&self, path: &Path, truncate: bool) -> std::io::Result<Box<dyn FsFile>>;
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn remove(&self, path: &Path) -> std::io::Result<()>;
+    fn sync_dir(&self, path: &Path);
+    fn is_root(&self) -> bool;
+}
+
+/// The machine's primitives.
+pub struct SystemFs;
+
+struct RealFile {
+    file: std::fs::File,
+}
+
+impl FsFile for RealFile {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        self.file.write_all(bytes)
+    }
+
+    fn write_once(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use std::io::Write;
+        self.file.write(bytes)
+    }
+
+    fn set_mode(&self, mode: u32) -> std::io::Result<()> {
+        let rc = unsafe { libc::fchmod(self.file.as_raw_fd(), mode) };
+        if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+
+    fn set_owner(&self, uid: u32, gid: u32) -> std::io::Result<()> {
+        let rc = unsafe { libc::fchown(self.file.as_raw_fd(), uid, gid) };
+        if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+
+    fn sync_all(&self) -> std::io::Result<()> {
+        self.file.sync_all()
+    }
+}
+
+impl Fs for SystemFs {
+    fn meta(&self, path: &Path) -> Option<FileMeta> {
+        std::fs::metadata(path).ok().map(|m| FileMeta {
+            mode: m.permissions().mode(),
+            uid: m.uid(),
+            gid: m.gid(),
+        })
+    }
+
+    fn mkdir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)
+    }
+
+    /// `create_new` + `O_NOFOLLOW`: the temp path must not be a pre-planted symlink. Apply runs
+    /// as root and writes into user-owned trees, so a symlink at a predictable name would
+    /// redirect a root write.
+    fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn FsFile>> {
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
+            .open(path)?;
+        Ok(Box::new(RealFile { file }))
+    }
+
+    fn open_existing(&self, path: &Path, truncate: bool) -> std::io::Result<Box<dyn FsFile>> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(truncate)
+            .open(path)?;
+        Ok(Box::new(RealFile { file }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
+
+    fn sync_dir(&self, path: &Path) {
+        if let Ok(dir) = std::fs::File::open(path) {
+            let _ = dir.sync_all();
+        }
+    }
+
+    fn is_root(&self) -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+}
+
+/// The write policy: one implementation, shared by the machine and the fixture.
+///
+/// A write is temp + fsync + rename, with mode and owner inherited from the target (or from the
+/// directory a new target lands in). Kernel attributes bypass that path, and `system-sleep/`
+/// stages its temp in the sibling backups directory.
+pub fn write_file(
+    fs: &dyn Fs,
+    root: &Path,
+    live: &str,
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> Result<()> {
+    if kernel_fs(live) {
+        return write_in_place(fs, root, path, bytes);
+    }
+    let existing = fs.meta(path);
+    // A new target inherits the owner of the directory it lands in: the engine's mirrors
+    // include files under a user's home, and a root-created file there is unusable to its
+    // owner even after the content is right.
+    let owner = existing
+        .map(|m| (m.uid, m.gid))
+        .or_else(|| path.parent().and_then(|p| fs.meta(p)).map(|m| (m.uid, m.gid)));
+    if let Some(parent) = path.parent() {
+        fs.mkdir_all(parent)
+            .map_err(|e| Failure::partial(format!("mkdir {}: {e}", parent.display())))?;
+    }
+    // systemd-sleep executes every file in `system-sleep/`, whatever its name — including a
+    // temp left by an interrupted apply. Stage those writes in the sibling backups directory
+    // instead (same filesystem, so the rename stays atomic).
+    let staging = match staging_live(live) {
+        Some(dir) => {
+            let dir = root.join(dir.trim_start_matches('/'));
+            fs.mkdir_all(&dir)
+                .map_err(|e| Failure::partial(format!("mkdir {}: {e}", dir.display())))?;
+            dir
+        }
+        None => path.parent().map(Path::to_path_buf).unwrap_or_else(|| root.to_path_buf()),
     };
-    match open() {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("genarch");
+    let tmp = staging.join(format!(".{name}.{}.tmp", std::process::id()));
+    let mut file = create_temp(fs, &tmp)?;
+    file.write_all(bytes)
+        .map_err(|e| Failure::partial(format!("write {}: {e}", tmp.display())))?;
+    if let Some(m) = existing.map(|m| m.mode).or(mode) {
+        file.set_mode(m)
+            .map_err(|e| Failure::partial(format!("chmod {}: {e}", tmp.display())))?;
+    }
+    if let Some((uid, gid)) = owner {
+        // A root run must preserve ownership or fail: silently leaving a root-owned file in a
+        // user's home strips that user's ability to edit it (measured live: two
+        // `~/.config/autostart` entries were root-owned after the cutover apply). An
+        // unprivileged run can only chown to itself, which is already the case.
+        if let Err(e) = file.set_owner(uid, gid)
+            && fs.is_root()
+        {
+            return Err(Failure::partial(format!(
+                "chown {uid}:{gid} {}: {e}",
+                tmp.display()
+            )));
+        }
+    }
+    // The rename is only atomic if the data is on disk before it happens.
+    file.sync_all()
+        .map_err(|e| Failure::partial(format!("fsync {}: {e}", tmp.display())))?;
+    drop(file);
+    fs.rename(&tmp, path).map_err(|e| {
+        let _ = fs.remove(&tmp);
+        Failure::partial(format!("rename {}: {e}", path.display()))
+    })?;
+    if let Some(parent) = path.parent() {
+        fs.sync_dir(parent);
+    }
+    Ok(())
+}
+
+/// Create the sibling temp file. A stale temp from a killed run carries our pid in its name,
+/// so it is ours to replace.
+fn create_temp(fs: &dyn Fs, path: &Path) -> Result<Box<dyn FsFile>> {
+    match fs.create_new(path) {
         Ok(file) => Ok(file),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            std::fs::remove_file(path)
+            fs.remove(path)
                 .map_err(|e| Failure::partial(format!("remove stale {}: {e}", path.display())))?;
-            open().map_err(|e| Failure::partial(format!("create {}: {e}", path.display())))
+            fs.create_new(path)
+                .map_err(|e| Failure::partial(format!("create {}: {e}", path.display())))
         }
         Err(e) => Err(Failure::partial(format!("create {}: {e}", path.display()))),
+    }
+}
+
+/// Write a kernel attribute. No temp file, no chmod, no mkdir: the open is the write
+/// permission on `sysfs`, and the file is already there.
+///
+/// **One `write(2)`, never `write_all`.** A `sysfs` attribute's `store()` is invoked once per
+/// write syscall and is not a stream: a short write followed by the remainder would be
+/// interpreted as a second, unrelated value (EINVAL, or a malformed setting).
+fn write_in_place(fs: &dyn Fs, root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    // A rehearsal root is a normal filesystem, where a shorter rewrite must not leave the tail
+    // of the old value behind. Real `/sys` and `/proc` reject O_TRUNC.
+    let truncate = root != Path::new("/");
+    let mut file = fs
+        .open_existing(path, truncate)
+        .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
+    match file.write_once(bytes) {
+        Ok(n) if n == bytes.len() => Ok(()),
+        Ok(n) => Err(Failure::partial(format!(
+            "write {}: short kernel write, {n} of {} bytes",
+            path.display(),
+            bytes.len()
+        ))),
+        Err(e) => Err(Failure::partial(format!("write {}: {e}", path.display()))),
+    }
+}
+
+/// One primitive [`RecordingFs`] performed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FsOp {
+    Create(PathBuf),
+    Rename { from: PathBuf, to: PathBuf },
+    Remove(PathBuf),
+}
+
+/// Performs every operation for real and records it, so the fixture runs exactly the policy the
+/// machine runs and a test can still see where a temp was staged.
+pub struct RecordingFs {
+    inner: SystemFs,
+    ops: std::cell::RefCell<Vec<FsOp>>,
+}
+
+impl RecordingFs {
+    fn new() -> Self {
+        RecordingFs { inner: SystemFs, ops: std::cell::RefCell::new(Vec::new()) }
+    }
+
+    fn recorded_ops(&self) -> Vec<FsOp> {
+        self.ops.borrow().clone()
+    }
+}
+
+impl Fs for RecordingFs {
+    fn meta(&self, path: &Path) -> Option<FileMeta> {
+        self.inner.meta(path)
+    }
+
+    fn mkdir_all(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.mkdir_all(path)
+    }
+
+    fn create_new(&self, path: &Path) -> std::io::Result<Box<dyn FsFile>> {
+        let file = self.inner.create_new(path)?;
+        self.ops.borrow_mut().push(FsOp::Create(path.to_path_buf()));
+        Ok(file)
+    }
+
+    fn open_existing(&self, path: &Path, truncate: bool) -> std::io::Result<Box<dyn FsFile>> {
+        // A live `/sys` and `/proc` always already contain the attribute; a fixture root is an
+        // ordinary directory tree, so the file is materialised on first write. A test that
+        // needs a refusing attribute puts a directory at the path, which still fails here.
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        }
+        self.inner.open_existing(path, truncate)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)?;
+        self.ops.borrow_mut().push(FsOp::Rename {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+        });
+        Ok(())
+    }
+
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove(path)?;
+        self.ops.borrow_mut().push(FsOp::Remove(path.to_path_buf()));
+        Ok(())
+    }
+
+    fn sync_dir(&self, path: &Path) {
+        self.inner.sync_dir(path);
+    }
+
+    fn is_root(&self) -> bool {
+        self.inner.is_root()
     }
 }
 
@@ -122,6 +419,32 @@ fn lock_at(path: &Path) -> Result<LockGuard> {
 pub struct Entry {
     pub path: PathBuf,
     pub is_dir: bool,
+}
+
+/// The observable result of running a program.
+///
+/// Deliberately not `std::process::Output`: that type has no public constructor, so the fixture
+/// had to fork `/bin/sh` to fabricate one. `status` is the exit code, or `-1` when the process
+/// died on a signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResult {
+    pub success: bool,
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl RunResult {
+    fn from_output(output: Output) -> Self {
+        RunResult {
+            success: output.status.success(),
+            status: output.status.code().unwrap_or(-1),
+            // A tool's stdout is not guaranteed to be UTF-8; the callers parse text, so the
+            // lossy rendering is the honest one.
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
 }
 
 /// Everything the engine needs from the machine, and nothing more.
@@ -184,8 +507,9 @@ pub trait Host {
     /// goal is "not present", and re-running must stay idempotent.
     fn remove(&self, live: &str) -> Result<()>;
 
-    /// Run a program and capture its output. Used for `ryzenadj` and reloads.
-    fn run(&self, argv: &[String]) -> Result<Output>;
+    /// Run a program and capture its output. Used for `ryzenadj`, `iw`, reloads and the unit
+    /// checks.
+    fn run(&self, argv: &[String]) -> Result<RunResult>;
 }
 
 /// The live machine.
@@ -210,35 +534,6 @@ impl RealHost {
         match std::env::var_os("GENARCH_ROOT") {
             Some(root) if !root.is_empty() => RealHost::rooted(root),
             _ => RealHost::new(),
-        }
-    }
-
-    /// Write a kernel attribute. No temp file, no chmod, no mkdir: the open is the write
-    /// permission on `sysfs`, and the file is already there.
-    ///
-    /// **One `write(2)`, never `write_all`.** A `sysfs` attribute's `store()` is invoked once
-    /// per write syscall and is not a stream: a short write followed by the remainder would be
-    /// interpreted as a second, unrelated value (EINVAL, or a malformed setting).
-    fn write_kernel(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        use std::io::Write;
-        let mut open = std::fs::OpenOptions::new();
-        open.write(true);
-        // A rehearsal root is a normal filesystem, where a shorter rewrite must not leave the
-        // tail of the old value behind. Real `/sys` and `/proc` reject O_TRUNC.
-        if self.root != Path::new("/") {
-            open.truncate(true);
-        }
-        let mut file = open
-            .open(path)
-            .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
-        match file.write(bytes) {
-            Ok(n) if n == bytes.len() => Ok(()),
-            Ok(n) => Err(Failure::partial(format!(
-                "write {}: short kernel write, {n} of {} bytes",
-                path.display(),
-                bytes.len()
-            ))),
-            Err(e) => Err(Failure::partial(format!("write {}: {e}", path.display()))),
         }
     }
 }
@@ -287,94 +582,7 @@ impl Host for RealHost {
 
     fn write(&self, live: &str, bytes: &[u8], mode: Option<u32>) -> Result<()> {
         let path = self.try_resolve(live)?;
-        if kernel_fs(live) {
-            return self.write_kernel(&path, bytes);
-        }
-        let existing = std::fs::metadata(&path).ok();
-        let existing_mode = existing.as_ref().map(|m| m.permissions().mode());
-        // A new target inherits the owner of the directory it lands in: the engine's mirrors
-        // include files under a user's home, and a root-created file there is unusable to its
-        // owner even after the content is right.
-        let owner = existing
-            .as_ref()
-            .map(|m| (m.uid(), m.gid()))
-            .or_else(|| {
-                path.parent()
-                    .and_then(|parent| std::fs::metadata(parent).ok())
-                    .map(|m| (m.uid(), m.gid()))
-            });
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Failure::partial(format!("mkdir {}: {e}", parent.display())))?;
-        }
-        // systemd-sleep executes every file in `system-sleep/`, whatever its name — including a
-        // temp left by an interrupted apply. Stage those writes in the sibling backups
-        // directory instead (same filesystem, so the rename stays atomic).
-        let staging = match staging_live(live) {
-            Some(dir) => {
-                let dir = self.try_resolve(dir)?;
-                std::fs::create_dir_all(&dir).map_err(|e| {
-                    Failure::partial(format!("mkdir {}: {e}", dir.display()))
-                })?;
-                dir
-            }
-            None => path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| self.root.clone()),
-        };
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("genarch");
-        let tmp = staging.join(format!(".{name}.{}.tmp", std::process::id()));
-        // `create_new` + `O_NOFOLLOW`: the temp path must not be a pre-planted symlink. Apply
-        // runs as root and writes into user-owned trees, so a symlink at a predictable name
-        // would redirect a root write.
-        let mut file = open_new(&tmp)?;
-        use std::io::Write;
-        file.write_all(bytes)
-            .map_err(|e| Failure::partial(format!("write {}: {e}", tmp.display())))?;
-        // Mode and ownership are set on the descriptor, never on the path: a path-based chmod
-        // after close follows a symlink planted in a user-writable directory (an unprivileged
-        // actor could turn it into `chown root /etc/shadow`).
-        if let Some(m) = existing_mode.or(mode) {
-            let rc = unsafe { libc::fchmod(file.as_raw_fd(), m) };
-            if rc != 0 {
-                return Err(Failure::partial(format!(
-                    "chmod {}: {}",
-                    tmp.display(),
-                    std::io::Error::last_os_error()
-                )));
-            }
-        }
-        if let Some((uid, gid)) = owner {
-            let rc = unsafe { libc::fchown(file.as_raw_fd(), uid, gid) };
-            // A root run must preserve ownership or fail: silently leaving a root-owned file in
-            // a user's home strips that user's ability to edit it (measured live: two
-            // `~/.config/autostart` entries were root-owned after the cutover apply). An
-            // unprivileged run can only chown to itself, which is already the case.
-            if rc != 0 && unsafe { libc::geteuid() } == 0 {
-                return Err(Failure::partial(format!(
-                    "chown {}:{} {}: {}",
-                    uid,
-                    gid,
-                    tmp.display(),
-                    std::io::Error::last_os_error()
-                )));
-            }
-        }
-        // The rename is only atomic if the data is on disk before it happens.
-        file.sync_all()
-            .map_err(|e| Failure::partial(format!("fsync {}: {e}", tmp.display())))?;
-        drop(file);
-        std::fs::rename(&tmp, &path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            Failure::partial(format!("rename {}: {e}", path.display()))
-        })?;
-        if let Some(parent) = path.parent()
-            && let Ok(dir) = std::fs::File::open(parent)
-        {
-            let _ = dir.sync_all();
-        }
-        Ok(())
+        write_file(&SystemFs, &self.root, live, &path, bytes, mode)
     }
 
     fn lock(&self, live: &str) -> Result<LockGuard> {
@@ -415,13 +623,14 @@ impl Host for RealHost {
         }
     }
 
-    fn run(&self, argv: &[String]) -> Result<Output> {
+    fn run(&self, argv: &[String]) -> Result<RunResult> {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| Failure::precondition("empty argv"))?;
         Command::new(program)
             .args(args)
             .output()
+            .map(RunResult::from_output)
             .map_err(|e| Failure::partial(format!("run {program}: {e}")))
     }
 }
@@ -433,6 +642,7 @@ impl Host for RealHost {
 /// reviewed without a dry-run flag threaded through every writer.
 pub struct FixtureHost {
     root: PathBuf,
+    fs: RecordingFs,
     recorded: std::cell::RefCell<BTreeMap<PathBuf, Vec<u8>>>,
     runs: std::cell::RefCell<Vec<Vec<String>>>,
     processes: std::cell::RefCell<BTreeMap<String, Canned>>,
@@ -442,6 +652,7 @@ impl FixtureHost {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         FixtureHost {
             root: root.into(),
+            fs: RecordingFs::new(),
             recorded: std::cell::RefCell::new(BTreeMap::new()),
             runs: std::cell::RefCell::new(Vec::new()),
             processes: std::cell::RefCell::new(BTreeMap::new()),
@@ -455,6 +666,12 @@ impl FixtureHost {
         self.recorded.borrow().clone()
     }
 
+    /// Every primitive the shared write policy performed, in order: where a temp was created,
+    /// what it was renamed to. That is how a test sees the staging rule, not just the result.
+    pub fn recorded_ops(&self) -> Vec<FsOp> {
+        self.fs.recorded_ops()
+    }
+
     pub fn recorded_runs(&self) -> Vec<Vec<String>> {
         self.runs.borrow().clone()
     }
@@ -463,7 +680,7 @@ impl FixtureHost {
     pub fn with_process(self, program: &str, stdout: &str, status: i32) -> Self {
         self.processes.borrow_mut().insert(
             program.to_string(),
-            Canned { stdout: stdout.to_string(), stdout_err: String::new(), status },
+            Canned { stdout: stdout.to_string(), stderr: String::new(), status },
         );
         self
     }
@@ -492,18 +709,7 @@ impl Host for FixtureHost {
                 path.display()
             )));
         }
-        let existing_mode = std::fs::metadata(&path).ok().map(|m| m.permissions().mode());
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Failure::partial(format!("mkdir {}: {e}", parent.display())))?;
-        }
-        std::fs::write(&path, bytes)
-            .map_err(|e| Failure::partial(format!("write {}: {e}", path.display())))?;
-        let effective = existing_mode.or(mode);
-        if let Some(m) = effective {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m))
-                .map_err(|e| Failure::partial(format!("chmod {}: {e}", path.display())))?;
-        }
+        write_file(&self.fs, &self.root, live, &path, bytes, mode)?;
         self.recorded.borrow_mut().insert(path, bytes.to_vec());
         Ok(())
     }
@@ -547,7 +753,7 @@ impl Host for FixtureHost {
         lock_at(&self.try_resolve(live)?)
     }
 
-    fn run(&self, argv: &[String]) -> Result<Output> {
+    fn run(&self, argv: &[String]) -> Result<RunResult> {
         // Nothing is executed. The intent is recorded so a test can assert argv (the
         // ryzenadj packing is exactly an argv property), and the reply comes from a
         // canned table so a caller that parses stdout still works.
@@ -562,12 +768,13 @@ impl Host for FixtureHost {
                     .to_string()
             })
             .unwrap_or_default();
-        let reply = self.processes.borrow().get(&program).cloned().unwrap_or(Canned {
-            stdout: String::new(),
-            stdout_err: String::new(),
-            status: 0,
-        });
-        Ok(canned_output(reply))
+        let reply = self.processes.borrow().get(&program).cloned().unwrap_or_default();
+        Ok(RunResult {
+            success: reply.status == 0,
+            status: reply.status,
+            stdout: reply.stdout,
+            stderr: reply.stderr,
+        })
     }
 }
 
@@ -575,30 +782,8 @@ impl Host for FixtureHost {
 #[derive(Debug, Clone, Default)]
 pub struct Canned {
     pub stdout: String,
-    pub stdout_err: String,
+    pub stderr: String,
     pub status: i32,
-}
-
-fn canned_output(canned: Canned) -> Output {
-    // `Output` has no public constructor, so it is produced by running a trivial process.
-    // The cost is one short fork per canned call in tests; the alternative is leaking a
-    // private type through the trait, which would make the seam depend on the test helper.
-    let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(if canned.status == 0 {
-        "cat"
-    } else {
-        "cat >&2; exit 1"
-    });
-    command.stdin(std::process::Stdio::piped());
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().expect("spawn canned process");
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin");
-        let _ = stdin.write_all(canned.stdout.as_bytes());
-    }
-    child.wait_with_output().expect("canned process output")
 }
 
 #[cfg(test)]
@@ -719,6 +904,83 @@ mod tests {
         assert!(staged.is_dir(), "staging directory must be created");
         let leftovers: Vec<PathBuf> = std::fs::read_dir(&staged).unwrap().flatten().map(|e| e.path()).collect();
         assert!(leftovers.is_empty(), "temp was not renamed away: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fixture_stages_a_sleep_hook_outside_the_executed_directory() {
+        // The fixture runs the same write policy as the machine, so the guard has to hold
+        // there too: what the gate proves is then what the apply does.
+        let dir = scratch("fixture-sleep");
+        let host = FixtureHost::new(&dir);
+        let live = "/usr/lib/systemd/system-sleep/genarch";
+        host.write(live, b"#!/bin/sh\ntrue\n", Some(0o755)).unwrap();
+
+        let sleep_dir = dir.join("usr/lib/systemd/system-sleep");
+        let mut created = Vec::new();
+        for op in host.recorded_ops() {
+            match op {
+                FsOp::Create(path) => created.push(path),
+                FsOp::Rename { from, .. } => created.push(from),
+                FsOp::Remove(_) => {}
+            }
+        }
+        assert!(!created.is_empty(), "the write policy created nothing to observe");
+        assert!(
+            created.iter().all(|p| !p.starts_with(&sleep_dir)),
+            "a temp was staged inside system-sleep/: {created:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sleep_dir.join("genarch")).unwrap(),
+            "#!/bin/sh\ntrue\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fixture_keeps_an_existing_mode_and_leaves_no_temp() {
+        let dir = scratch("fixture-mode");
+        let live = "/etc/tlp.d/01-x.conf";
+        let target = dir.join(live.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "old\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let host = FixtureHost::new(&dir);
+        host.write(live, b"new\n", Some(0o644)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the fixture must not re-apply the source mode");
+        let leftovers: Vec<PathBuf> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p != &target)
+            .collect();
+        assert!(leftovers.is_empty(), "fixture write left a temp file: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_canned_program_reports_its_status_without_forking_a_process() {
+        // `RunResult` exists so the fixture can answer a `run` without fabricating a
+        // `std::process::Output`; the status and streams must survive intact.
+        let dir = scratch("run");
+        let host = FixtureHost::new(&dir)
+            .with_process("ryzenadj", "PPT LIMIT FAST = 28000\n", 0)
+            .with_process("iw", "nope\n", 7);
+
+        let ok = host.run(&["ryzenadj".into(), "--info".into()]).unwrap();
+        assert!(ok.success);
+        assert_eq!(ok.status, 0);
+        assert!(ok.stdout.contains("28000"));
+        assert!(ok.stderr.is_empty());
+
+        let bad = host.run(&["/usr/bin/iw".into(), "dev".into()]).unwrap();
+        assert!(!bad.success);
+        assert_eq!(bad.status, 7);
+        assert_eq!(bad.stdout, "nope\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

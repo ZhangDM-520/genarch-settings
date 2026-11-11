@@ -99,10 +99,10 @@ pub fn apply(host: &dyn Host, config: &RyzenadjConfig) -> Result<Vec<CallResult>
     let mut out = Vec::new();
     for argv in argv_plan(config) {
         let result = host.run(&argv);
-        let ok = matches!(result, Ok(ref o) if o.status.success());
+        let ok = matches!(result, Ok(ref o) if o.success);
         if let Ok(o) = &result
-            && !o.status.success() {
-                let stderr = String::from_utf8_lossy(&o.stderr);
+            && !o.success {
+                let stderr = &o.stderr;
                 eprintln!(
                     "genarch: ryzenadj failed: {} ({}): {}",
                     argv.join(" "),

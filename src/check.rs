@@ -259,7 +259,7 @@ fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
     let Ok(output) = result else {
         return Ok(verdict("SMU", Class::Skipped, "needs root (ryzenadj --info)"));
     };
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let text = output.stdout;
     let fast = smu_value(&text, "PPT LIMIT FAST");
     let slow = smu_value(&text, "PPT LIMIT SLOW");
     let stapm = smu_value(&text, "STAPM LIMIT");
@@ -344,8 +344,8 @@ fn check_wifi(ctx: &Ctx<'_>) -> Result<Verdict> {
         "power_save".into(),
     ]);
     match result {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
+        Ok(o) if o.success => {
+            let text = o.stdout;
             let on = text.to_lowercase().contains("power save: on");
             Ok(if on {
                 verdict("WIFI", Class::Ok, format!("{iface} power_save on"))
@@ -393,7 +393,7 @@ fn check_timer(ctx: &Ctx<'_>) -> Result<Verdict> {
             "is-enabled".into(),
             (*unit).to_string(),
         ]);
-        let enabled = matches!(&result, Ok(o) if o.status.success());
+        let enabled = matches!(&result, Ok(o) if o.success);
         if !enabled {
             not_enabled.push(*unit);
         }
