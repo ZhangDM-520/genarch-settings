@@ -60,6 +60,28 @@ layer from `/etc/genarch`, and records what it owns in `/var/lib/genarch/manifes
 is pruned unless the manifest says the engine wrote it, and a path belonging to a profile that is
 merely not selected stays owned.
 
+## Coverage
+
+| Profile | Machine | Kind | What it judges |
+|---|---|---|---|
+| `zenbook-s16` | ASUS Zenbook S 16 UM5606WA (Ryzen AI 9 HX 370) | measured | everything — this host |
+| `framework-13-amd` | Framework Laptop 13, Ryzen 7040 (7640U / 7840U) | documented | `PROFILE`, `CEIL` (4.9 / 5.1 GHz bands) |
+| `framework-16-amd` | Framework Laptop 16, Ryzen 7040 (7840HS / 7940HS) | documented | `PROFILE`, `CEIL` (5.1 / 5.2 GHz bands) |
+| `elitebook-845-g11` | HP EliteBook 845 14" G11 (8840U/HS, 8640HS, 8440U) | documented | `PROFILE`, `CEIL` (three SKU bands) |
+| `zenbook-14-um3406` | ASUS Zenbook 14 OLED UM3406HA (8840HS) | documented | `PROFILE`, `CEIL` (5.1 GHz) |
+| `zephyrus-g14-2024-ga403ui` | ASUS ROG Zephyrus G14 2024 GA403UI (8945HS) | documented | `PROFILE`, `CEIL` (5.2 GHz) |
+| `zephyrus-g14-2024-ga403uv` | ASUS ROG Zephyrus G14 2024 GA403UV (8945HS) | documented | `PROFILE`, `CEIL` (5.2 GHz) |
+
+A **documented** profile carries only values a publication states, so it ships no file, sets no
+curve offset and declares no power envelope — `CO`, `POWER`, `SMU` and `MIRROR` have nothing to
+judge and say so. That is the honest shape of coverage from documentation alone:
+`docs/PROFILES.md` explains the three provenance classes and what a machine needs before it can
+have a profile.
+
+**Deliberately not covered:** Lenovo ThinkPad Z13 Gen 2. Its DMI `product_name` is the exact MTM
+(`21JVCTO1WW`), and PSREF lists 1,276 MTMs with two different CPUs, so exact matching cannot
+express the model — see "When a machine cannot be covered" in `docs/PROFILES.md`.
+
 ## Licence
 
 MIT — see `LICENSE`. `SCOPE.md` says what belongs here; `CONTRIBUTING.md` says how a change is

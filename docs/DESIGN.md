@@ -162,6 +162,13 @@ wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was 
 
 ## Open
 
+- **Per-MTM machine identity.** `[requires]` is exact equality, which is the right default: a
+  near-miss must not apply another machine's facts. But some vendors put the sales code in
+  `product_name` — a Lenovo ThinkPad Z13 Gen 2 reports `21JVCTO1WW`, and PSREF lists 1,276 MTMs
+  across two CPUs for one model name. Exact matching cannot express "any 21JV unit", so that
+  platform is deliberately uncovered rather than covered by two arbitrary MTM profiles. The
+  options are per-MTM profiles (correct, narrow) or a declared prefix mode with its own
+  precedence rule; the latter is a matching-mode change and has not been decided.
 - License and repository metadata (owner decision).
 
 ## Closed

@@ -81,6 +81,22 @@ Everything above, plus: `[co]` offsets from an actual sweep, `wake_disarm` from
 and `mirror/`/`managed/` entries for this machine's own files. That is what
 `intent/profiles/zenbook-s16/` is.
 
+## When a machine cannot be covered
+
+Some vendors do not publish a stable machine identity. Lenovo is the worked example: on a
+ThinkPad Z13 Gen 2, `product_name` **is the MTM** (`21JVCTO1WW`, `21JV0017MX`, …), and PSREF lists
+**1,276** MTMs across two machine types, with two different CPUs (7840U at 5.1 GHz, 7540U at
+4.9 GHz). Exact matching would therefore ship a profile for two or three arbitrary MTMs and claim
+coverage of a thousand — the worst of both worlds.
+
+So the Z13 Gen 2 is **not covered**, deliberately. Shipping it needs one of:
+
+- per-MTM profiles (correct, and only for the MTMs you actually own), or
+- a prefix rule in `[requires]` (e.g. machine type `21JV`), which is a matching-mode change and
+  a different design question — see `docs/DESIGN.md` “Open”.
+
+Recording the blocker is the honest result. A profile that never selects is not coverage.
+
 ## The gate
 
 `cargo test --test profiles` loads **every** directory under `intent/profiles/` as if it were
