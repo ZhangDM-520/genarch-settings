@@ -38,8 +38,12 @@ fn load(slug: &str) -> Result<Intent, String> {
 }
 
 fn load_at(intent_root: &Path, slug: &str) -> Result<Intent, String> {
+    // Unique per call, not per test: two tests loading the same slug in parallel would
+    // otherwise share (and delete) one scratch overlay.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "genarch-profile-{}-{slug}",
+        "genarch-profile-{}-{slug}-{seq}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -170,6 +174,31 @@ fn every_shipped_profile_is_selectable_and_honest() {
         }
     }
     assert!(failures.is_empty(), "profiles that do not meet the contract:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn no_two_profiles_claim_the_same_machine() {
+    // `[requires]` is exact equality, so two profiles with the same product string make one of
+    // them unreachable — the loser is silently never selected, which reads as "no profile for
+    // this machine" rather than as a bug.
+    let mut claimed: Vec<(String, String)> = Vec::new();
+    for slug in slugs() {
+        if let Ok(intent) = load(&slug)
+            && let Some(profile) = &intent.profile
+            && let Some(product) = profile.requires.get("product")
+        {
+            claimed.push((product.clone(), slug));
+        }
+    }
+    claimed.sort();
+    for pair in claimed.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            panic!(
+                "profiles '{}' and '{}' both require product = {:?}; one can never be selected",
+                pair[0].1, pair[1].1, pair[0].0
+            );
+        }
+    }
 }
 
 #[test]
