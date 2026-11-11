@@ -1,6 +1,6 @@
 # AGENTS.md — genarch-settings (native tuning engine)
 
-Last reviewed: 2026-11-10.
+Last reviewed: 2026-11-11.
 
 ## Project overview
 
@@ -23,6 +23,7 @@ restate a knob value in prose.
 | `./target/debug/genarch report [--json]` | judge live against intent; unprivileged |
 | `sudo ./target/debug/genarch apply [--dry-run]` | converge live; `--dry-run` writes nothing |
 | `./target/debug/genarch harvest` | the intent change that would match live |
+| `./target/debug/genarch import <state> <profile-dir>` | derive a machine profile from a legacy shell `state/` tree |
 | `sudo ./target/debug/genarch converge <boot\|resume\|ceil>` | the scheduled passes |
 
 Rehearsal without touching the machine: `GENARCH_ROOT=/path/to/copy` aims every live path at a
