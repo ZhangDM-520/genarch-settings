@@ -39,7 +39,7 @@ cannot touch (`none`).
 On Arch, with the recipe next to the `gsa` recipe set:
 
 ```sh
-makepkg -f && sudo pacman -U genarch-0.3.0-1-x86_64.pkg.tar.zst
+makepkg -f && sudo pacman -U genarch-0.3.1-1-x86_64.pkg.tar.zst
 ```
 
 The package ships this host's profile **and** its selection (`/etc/genarch/profile`, a pacman
