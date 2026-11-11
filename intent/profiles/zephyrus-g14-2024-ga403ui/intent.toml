@@ -1,0 +1,18 @@
+# ASUS ROG Zephyrus G14 2024, GA403UI — Ryzen 9 8945HS.
+#
+# ASUS reports one DMI product string per board code, so the GA403UI and GA403UV are separate
+# profiles that happen to carry the same tuning: `[requires]` is an exact match, and a looser
+# rule would also catch the GA403UU, whose retail units ship a 5.1 GHz Ryzen 7 8845HS. That SKU
+# stays unshipped until a probe confirms its product string and its clock.
+#
+# Documented, not measured (`docs/PROFILES.md`).
+status = "documented"
+source = [
+  "https://linux-hardware.org/?probe=0f6120fef2&log=dmidecode",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-9-8945hs.html",
+  "https://wiki.archlinux.org/title/Asusctl",
+]
+
+[requires]
+product = "ROG Zephyrus G14 GA403UI_GA403UI"
+sys_vendor = "ASUSTeK COMPUTER INC."

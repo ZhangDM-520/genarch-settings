@@ -1,0 +1,12 @@
+# Phoenix: one core type (Zen 4, SMT), one band per SKU clock.
+#   7640U  4.9 GHz
+#   7840U  5.1 GHz
+# `cpuinfo_max_freq` is the single-core max boost, so the highest band a unit admits is its own
+# documented ceiling — always a value the kernel accepts.
+[[class]]
+name = "7840u"
+khz = 5100000
+
+[[class]]
+name = "7640u"
+khz = 4900000

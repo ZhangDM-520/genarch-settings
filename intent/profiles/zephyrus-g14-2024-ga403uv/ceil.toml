@@ -1,0 +1,6 @@
+# Hawk Point: one core type (Zen 4, SMT). 5.2 GHz is AMD's single-core max boost for the 8945HS,
+# which every GA403UI/UV unit carries; the dGPU's TGP is a separate power domain and is not a
+# CPU ceiling.
+[[class]]
+name = "8945hs"
+khz = 5200000

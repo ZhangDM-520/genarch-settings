@@ -1,0 +1,18 @@
+# ASUS Zenbook 14 OLED, UM3406HA — Ryzen 7 8840HS.
+#
+# The UM3406 *family* is not a SKU: ASUS's page lists five CPUs under it, and the UM3406KA
+# (Ryzen AI 7 350) reports its own product string. Only the probed 8840HS unit is covered here;
+# a prefix match would silently apply this profile to a different chip.
+#
+# Documented, not measured (`docs/PROFILES.md`).
+status = "documented"
+source = [
+  "https://linux-hardware.org/?probe=10624adf44",
+  "https://raw.githubusercontent.com/linuxhw/DMI/master/Notebook/ASUSTek%20Computer/ASUS/ASUS%20Zenbook%2014%20UM3406HA_UM3406HA/A69EB03BB84E",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/8000-series/amd-ryzen-7-8840hs.html",
+  "https://wiki.archlinux.org/title/ASUS_Linux",
+]
+
+[requires]
+product = "ASUS Zenbook 14 UM3406HA_UM3406HA"
+sys_vendor = "ASUSTeK COMPUTER INC."

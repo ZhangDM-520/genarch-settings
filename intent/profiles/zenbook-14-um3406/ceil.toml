@@ -1,0 +1,6 @@
+# Hawk Point: one core type (Zen 4, SMT, one die). The documented single-core max boost is the
+# ceiling; the probe's cpufreq-reported maximum (6.68 GHz) is an acpi-cpufreq artifact, not a
+# vendor specification, and is deliberately not used.
+[[class]]
+name = "8840hs"
+khz = 5100000
