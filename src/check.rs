@@ -143,14 +143,14 @@ fn verdict(id: &'static str, class: Class, detail: impl Into<String>) -> Verdict
 fn check_profile(ctx: &Ctx<'_>) -> Result<Verdict> {
     let Some(profile) = &ctx.intent.profile else {
         return Ok(verdict(
-            "PROFILE",
+            PROFILE_ID,
             Class::Skipped,
             "no profile selected (base intent only)",
         ));
     };
     if profile.requires.is_empty() {
         return Ok(verdict(
-            "PROFILE",
+            PROFILE_ID,
             Class::Ok,
             format!("profile '{}' declares no machine requirement", profile.name),
         ));
@@ -160,13 +160,13 @@ fn check_profile(ctx: &Ctx<'_>) -> Result<Verdict> {
         let required: Vec<String> =
             profile.requires.iter().map(|(fact, want)| format!("{fact}={want}")).collect();
         Ok(verdict(
-            "PROFILE",
+            PROFILE_ID,
             Class::Ok,
             format!("profile '{}' matches {}", profile.name, required.join(" ")),
         ))
     } else {
         Ok(verdict(
-            "PROFILE",
+            PROFILE_ID,
             Class::Drift,
             format!(
                 "profile '{}' is not for this machine: {}",
@@ -353,9 +353,10 @@ fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
             "ryzenadj --info returned no power table (needs root, or ryzenadj is missing)",
         ));
     };
-    let want = ctx.intent.ryzenadj.limits.fast.map(|v| v as f64 / 1000.0);
-    let want_str = want.map(|w| format!("{w:.3}")).unwrap_or_else(|| "unset".into());
-    if want_str != "unset" && (fast != want_str || slow != want_str) {
+    // The early return above guarantees a declared envelope, so there is no "unset" case here.
+    let want = ctx.intent.ryzenadj.limits.fast.expect("guarded above") as f64 / 1000.0;
+    let want_str = format!("{want:.3}");
+    if fast != want_str || slow != want_str {
         return Ok(verdict(
             "SMU",
             Class::Drift,
@@ -379,9 +380,11 @@ fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
     match stapm.as_str() {
         v if v == want_str => Ok(verdict("SMU", Class::Ok, format!("PPT FAST/SLOW/STAPM {v}"))),
         // ACCEPTED is scoped to a readback BELOW the envelope: the firmware's own floor.
-        v if v.parse::<f64>().map(|f| f < want.unwrap_or(f64::MAX)).unwrap_or(false) => Ok(
-            verdict("SMU", Class::Accepted, format!("STAPM {v} W, firmware preference")),
-        ),
+        v if v.parse::<f64>().map(|f| f < want).unwrap_or(false) => Ok(verdict(
+            "SMU",
+            Class::Accepted,
+            format!("STAPM {v} W, firmware preference"),
+        )),
         v => Ok(verdict(
             "SMU",
             Class::Drift,

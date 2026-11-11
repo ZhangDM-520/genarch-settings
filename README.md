@@ -25,7 +25,8 @@ genarch import      <state> <profile-dir>  derive a profile from a legacy shell 
 
 Exit codes keep the shell engine's contract: `0` clean · `1` drift · `2` precondition · `3`
 partial. `apply` exits 1 when the selected profile does not match the machine, even though it
-applied — the writes landed against another machine's facts, and that is the drift to fix. `apply` writes a dated pre-image beside every file it replaces, keeps the source mode
+applied — the writes landed against another machine's facts, and that is the drift to fix.
+`--dry-run` always exits 0: it is a preview, and an installer runs it under `set -e`. `apply` writes a dated pre-image beside every file it replaces, keeps the source mode
 and owner, and refuses on any target it cannot classify.
 
 The report is eleven rows. `--json` is schema 2: a top-level `profile` object (`null` when none
@@ -38,7 +39,7 @@ cannot touch (`none`).
 On Arch, with the recipe next to the `gsa` recipe set:
 
 ```sh
-makepkg -f && sudo pacman -U genarch-0.2.0-1-x86_64.pkg.tar.zst
+makepkg -f && sudo pacman -U genarch-0.2.2-1-x86_64.pkg.tar.zst
 ```
 
 The package ships this host's profile **and** its selection (`/etc/genarch/profile`, a pacman

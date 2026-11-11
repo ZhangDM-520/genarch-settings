@@ -45,7 +45,13 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
             let intent = Intent::load_default(&host)?;
             let (plan, outcome) = converge::apply(&intent, &host, dry_run)?;
             print_plan(&plan, dry_run);
-            let exit = converge::apply_exit(&plan);
+            // A dry run is a rehearsal: `install.sh` runs it under `set -e`, so previewing a
+            // mismatch must not abort the install. The real apply is the one that exits drift.
+            let exit = if dry_run {
+                Exit::Clean
+            } else {
+                converge::apply_exit(&plan)
+            };
             if !dry_run {
                 if !outcome.backups.is_empty() {
                     println!("BACKUPS {}", outcome.backups.len());

@@ -21,8 +21,9 @@ ceiling). A knob has exactly one home for its value; the ledger records *why*, n
 **Layer** — one root in precedence order: **base** (`/usr/lib/genarch`), **profile**
 (`/usr/lib/genarch/profiles/<name>` or `/etc/genarch/profiles/<name>`), **operator**
 (`/etc/genarch`). Precedence is base → profile → operator; the operator layer always wins.
-Scalar maps merge per key, lists replace wholesale, and mirrors are whole-file with an explicit
-`omit = [...]` tombstone.
+Scalar maps merge per key, lists replace wholesale (the one union is `[units]`: each layer adds
+an expected-enabled entry and cannot withdraw another's), and mirrors and managed records are
+whole-file with an explicit `omit = [...]` tombstone, which reaches only the layers below it.
 
 **Profile** — the machine-specific layer: a directory shaped like the base, selected by the
 `profile = "<name>"` line in `/etc/genarch/profile`. It carries every fact that is a measurement

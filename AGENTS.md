@@ -23,6 +23,7 @@ restate a knob value in prose.
 | `./target/debug/genarch report [--json]` | judge live against intent; unprivileged |
 | `sudo ./target/debug/genarch apply [--dry-run]` | converge live; `--dry-run` writes nothing |
 | `./target/debug/genarch harvest` | the intent change that would match live |
+| `./target/debug/genarch units` | the units the intent expects enabled (the installers consume this) |
 | `./target/debug/genarch import <state> <profile-dir>` | derive a machine profile from a legacy shell `state/` tree |
 | `sudo ./target/debug/genarch converge <boot\|resume\|ceil>` | the scheduled passes |
 
@@ -46,8 +47,9 @@ There is no lint config; `cargo clippy` is ad hoc.
    `managed/*.toml` anchored-line records. Layers, in precedence order: **base**
    (`/usr/lib/genarch`), **profile** (`{base,overlay}/profiles/<name>`, selected by
    `/etc/genarch/profile`), **operator** (`/etc/genarch`). Scalar maps merge per key, lists
-   replace wholesale, mirrors and managed records are whole-file with an `[omit]` tombstone in
-   a layer's `intent.toml`. No profile means base only: nothing is guessed, and the rows that
+   replace wholesale (`[units]` is the one union: an expectation a layer adds), mirrors and
+   managed records are whole-file with an `[omit]` tombstone that reaches only the layers below
+   it, in a layer's `intent.toml`. No profile means base only: nothing is guessed, and the rows that
    need a machine fact report SKIPPED. `tree` owns the walk, the deployable-name rule and the
    live-path mapping for both the loader and the importer.
 3. **`converge` is plan then apply.** `plan` writes nothing and needs no privilege; `apply`

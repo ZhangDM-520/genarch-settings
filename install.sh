@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO="https://github.com/ZhangDM-520/genarch-settings"
-VERSION="0.2.1"
+VERSION="0.2.2"
 PREFIX="/usr"
 # Fixed, not derived from --prefix: the engine resolves /usr/lib/genarch itself; a relocated
 # intent is a run-time `GENARCH_INTENT` override, not an install layout.
@@ -45,8 +45,8 @@ Selecting one for another laptop is not an error: `genarch report` says PROFILE 
 exits 1, and `apply` still runs, because the operator has to be able to see it and fix it.
 
 The engine is idempotent: installing over an existing one re-plans and converges, it does not
-reset anything.  Uninstall: disable genarch.service genarch-ceil.timer, remove the binary, the
-intent directory and the documentation, then run `systemctl daemon-reload`.
+reset anything.  Uninstall: `systemctl disable` the units `genarch units` prints, remove the
+binary, the intent directory and the documentation, then run `systemctl daemon-reload`.
 USAGE
 }
 
@@ -175,8 +175,8 @@ if (( ENABLE )); then
   run systemctl daemon-reload
   run udevadm control --reload
   # The unit list has one home: ask the intent, do not restate it here. A real run asks the
-  # binary it just built; a dry run asks the installed one, so a stale build in the tree
-  # cannot answer for the intent that is about to be installed.
+  # intent just installed (the copy above already happened); a dry run can only ask the
+  # installed one, so it never answers from a stale build left in the source tree.
   UNITS_CMD="$BIN"
   (( DRY )) && UNITS_CMD="$PREFIX/bin/genarch"
   [[ -x $UNITS_CMD ]] || UNITS_CMD="$PREFIX/bin/genarch"

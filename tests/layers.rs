@@ -177,8 +177,19 @@ fn a_managed_record_is_replaced_by_name_or_removed_by_its_name() {
 fn lists_replace_wholesale_and_scalars_merge_per_key() {
     let tree = Tree::new("passes-merge")
         .write(
+            "intent.toml",
+            &format!(
+                "schema = {SCHEMA_VERSION}\n[units]\nenabled = [\"genarch.service\"]\n"
+            ),
+        )
+        .write(
             "passes.toml",
             "wake_disarm = [\"GPP0\"]\nusb_autosuspend = [\"13d3:3608\"]\nidle_governor = \"teo\"\n",
+        )
+        .write_profile(
+            "p1",
+            "intent.toml",
+            "[units]\nenabled = [\"zenbook.service\"]\n",
         )
         .write_profile(
             "p1",
@@ -189,6 +200,11 @@ fn lists_replace_wholesale_and_scalars_merge_per_key() {
 
     let intent = tree.load().unwrap();
     assert_eq!(intent.passes.wake_disarm, Some(vec!["XHC0".to_string()]));
+    // Units are the one union: each layer expects its own, and neither can withdraw another's.
+    assert_eq!(
+        intent.units,
+        vec!["genarch.service".to_string(), "zenbook.service".to_string()]
+    );
     // The profile said nothing about these, so the layer below keeps them.
     assert_eq!(intent.passes.usb_autosuspend, Some(vec!["13d3:3608".to_string()]));
     assert_eq!(intent.passes.idle_governor.as_deref(), Some("teo"));
@@ -224,15 +240,34 @@ fn no_profile_selected_means_base_only_and_no_guessed_host_defaults() {
 }
 
 #[test]
-fn units_are_unioned_across_layers() {
-    // The one class that is not replace-or-per-key: a layer adds an expectation, and a
-    // profile must not silently drop the engine's own units from the report.
-    let tree = Tree::new("units-union")
-        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n[units]\nenabled = [\"genarch.service\"]\n"))
-        .write_profile("p1", "intent.toml", "[units]\nenabled = [\"zenbook.service\", \"genarch.service\"]\n")
-        .select("p1");
+fn smu_is_skipped_without_a_declared_envelope() {
+    // The base ships the field labels and ryzenadj answers, but no profile declared a limit.
+    // Before the guard, STAPM was compared against "unset" and any number read as ACCEPTED, so
+    // a profile-less host looked as if its power limits had been verified.
+    let smu_table = "[smu]\nstapm = \"STAPM LIMIT\"\nfast = \"PPT LIMIT FAST\"\nslow = \"PPT LIMIT SLOW\"\n";
+    let readback = "| STAPM LIMIT     | 24.000 | stapm-limit |\n\
+                    | PPT LIMIT FAST  | 31.000 | fast-limit  |\n\
+                    | PPT LIMIT SLOW  | 20.000 | slow-limit  |\n";
+
+    let tree = Tree::new("smu-no-envelope")
+        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n{smu_table}"));
+    let host = tree.host().with_process("ryzenadj", readback, 0);
     let intent = tree.load().unwrap();
-    assert_eq!(intent.units, vec!["genarch.service".to_string(), "zenbook.service".to_string()]);
+    let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
+    let smu = verdicts.iter().find(|v| v.id == "SMU").unwrap();
+    assert_eq!(smu.class, Class::Skipped, "{smu:?}");
+
+    // The same readback with an envelope declared is judged: the intent says 25 W, live says
+    // 31 W.
+    let tree = Tree::new("smu-envelope")
+        .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n{smu_table}"))
+        .write_profile("p1", "ryzenadj.toml", "[limits]\nfast = 25000\n")
+        .select("p1");
+    let host = tree.host().with_process("ryzenadj", readback, 0);
+    let intent = tree.load().unwrap();
+    let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
+    let smu = verdicts.iter().find(|v| v.id == "SMU").unwrap();
+    assert_eq!(smu.class, Class::Drift, "{smu:?}");
 }
 
 #[test]
