@@ -18,7 +18,11 @@ fn profiles_root() -> PathBuf {
 }
 
 fn slugs() -> Vec<String> {
-    let mut out: Vec<String> = std::fs::read_dir(profiles_root())
+    slugs_at(&profiles_root())
+}
+
+fn slugs_at(root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(root)
         .expect("intent/profiles must exist")
         .flatten()
         .filter(|e| e.path().is_dir())
@@ -30,6 +34,10 @@ fn slugs() -> Vec<String> {
 
 /// Select `slug` in a scratch overlay and load the shipped intent as a machine would.
 fn load(slug: &str) -> Result<Intent, String> {
+    load_at(profiles_root().parent().expect("intent/"), slug)
+}
+
+fn load_at(intent_root: &Path, slug: &str) -> Result<Intent, String> {
     let dir = std::env::temp_dir().join(format!(
         "genarch-profile-{}-{slug}",
         std::process::id()
@@ -38,16 +46,46 @@ fn load(slug: &str) -> Result<Intent, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("profile"), format!("profile = \"{slug}\"\n"))
         .map_err(|e| e.to_string())?;
-    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("intent");
-    let loaded = Intent::load(&base, &dir).map_err(|e| e.message);
+    let loaded = Intent::load(intent_root, &dir).map_err(|e| e.message);
     let _ = std::fs::remove_dir_all(&dir);
     loaded
 }
 
+/// Files this profile *layer* ships, relative to its own directory.
+///
+/// The resolved intent also carries the base layer's mirrors, so it cannot answer "does this
+/// profile ship a file" — the question is about the profile's own tree.
+fn layer_files(root: &Path, slug: &str) -> Vec<(String, PathBuf)> {
+    let root = root.join(slug);
+    let mut out = Vec::new();
+    for dir in ["mirror", "managed"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(current) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Ok(rel) = path.strip_prefix(&root) {
+                    out.push((rel.display().to_string(), path));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Everything wrong with one profile, as `field: problem` lines.
 fn audit(slug: &str) -> Vec<String> {
+    audit_at(&profiles_root(), slug)
+}
+
+/// The audit, over any profiles root, so the gate can be pointed at a deliberately bad profile.
+fn audit_at(profiles: &Path, slug: &str) -> Vec<String> {
     let mut problems = Vec::new();
-    let intent = match load(slug) {
+    let intent_root = profiles.parent().expect("intent/").to_path_buf();
+    let intent = match load_at(&intent_root, slug) {
         Ok(intent) => intent,
         Err(message) => return vec![format!("load: {message}")],
     };
@@ -71,16 +109,9 @@ fn audit(slug: &str) -> Vec<String> {
 
     let documented = profile.status == ProfileStatus::Documented;
     if documented {
-        for target in &intent.mirror {
+        for (rel, _) in layer_files(profiles, slug) {
             problems.push(format!(
-                "mirror: a documented profile ships no file ({})",
-                target.live
-            ));
-        }
-        for record in &intent.managed {
-            problems.push(format!(
-                "managed: a documented profile patches no foreign file ({})",
-                record.target
+                "file: a documented profile ships nothing of its own ({rel})"
             ));
         }
         if intent.ryzenadj.co.all.is_some() || intent.ryzenadj.co.per_core.is_some() {
@@ -96,14 +127,13 @@ fn audit(slug: &str) -> Vec<String> {
 
     // A *measured* profile may own the machine's own paths — that is what measuring means, and
     // the reference profile legitimately ships this user's autostart entries. A documented one
-    // may not: a stranger's home directory is not a fact a publication carries.
+    // may not: a stranger's home directory is not a fact a publication carries. This looks at
+    // the profile layer's own files, since the base legitimately ships `/etc` paths.
     if documented {
-        let mut paths: Vec<String> = intent.mirror.iter().map(|m| m.live.clone()).collect();
-        paths.extend(intent.managed.iter().map(|r| r.target.clone()));
-        for path in paths {
+        for (rel, _) in layer_files(profiles, slug) {
             for needle in LIVE_ONLY {
-                if path.contains(needle) {
-                    problems.push(format!("path: {path} names a live-only location ({needle})"));
+                if rel.contains(needle) {
+                    problems.push(format!("path: {rel} names a live-only location ({needle})"));
                 }
             }
         }
@@ -205,12 +235,15 @@ fn the_audit_catches_a_measured_fact_in_a_documented_profile() {
     assert_eq!(profile.status, ProfileStatus::Documented);
     assert_eq!(profile.source, vec!["https://example.invalid/spec".to_string()]);
 
-    // Each rule the audit applies, on the loaded intent: every one of these is a violation.
-    assert!(!intent.mirror.is_empty(), "the fixture must ship a file");
-    assert!(intent.mirror.iter().any(|m| m.live.contains("/home/")));
-    assert!(intent.ryzenadj.co.all.is_some());
-    assert!(intent.passes.wake_disarm.is_some());
-    assert!(intent.passes.usb_autosuspend.is_some());
+    // The audit must fire on every one of these, not merely observe them.
+    let problems = audit_at(&base.join("profiles"), "fake");
+    let joined = problems.join("\n");
+    for expected in ["file:", "co:", "wake_disarm:", "usb_autosuspend:", "path:"] {
+        assert!(
+            problems.iter().any(|p| p.starts_with(expected)),
+            "audit missed {expected}:\n{joined}"
+        );
+    }
 
     // A documented profile with no citation is refused at load time, before any audit runs.
     std::fs::write(

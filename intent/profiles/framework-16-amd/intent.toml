@@ -1,0 +1,25 @@
+# Framework Laptop 16, AMD (Ryzen 7040 series mainboard).
+#
+# The 7840HS and 7940HS ship on the same mainboard and report the *same* product string —
+# Framework's own detection has one entry for the whole 7040 family — so one profile covers
+# both. Two profiles would make one of them unreachable.
+#
+# Documented, not measured: no file is deployed, no curve offset is set and no wake list is
+# guessed, because none of those can be published. `docs/PROFILES.md` is the contract.
+status = "documented"
+source = [
+  "https://github.com/FrameworkComputer/framework-system/blob/main/framework_lib/src/smbios.rs",
+  "https://linux-hardware.org/?probe=499b81bf12",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/7000-series/amd-ryzen-7-7840hs.html",
+  "https://wiki.archlinux.org/title/Framework_Laptop_16",
+]
+
+[requires]
+product = "Laptop 16 (AMD Ryzen 7040 Series)"
+sys_vendor = "Framework"
+
+# `amd_pmf` owns the platform profile, and Framework's own Linux documentation recommends
+# power-profiles-daemon over TLP on this machine. The engine does not manage PPD; recorded here
+# so an operator adding a TLP record knows what it would conflict with.
+[units]
+enabled = ["genarch.service", "genarch-ceil.timer"]

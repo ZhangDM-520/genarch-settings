@@ -1,0 +1,9 @@
+# Phoenix is one core type (Zen 4 with SMT), so one frequency band covers every policy.
+#
+# 5.1 GHz is the 7840HS figure and the safe ceiling for both SKUs: the 7940HS boosts to 5.2 GHz
+# but reports the same DMI product string, so a 5.2 band would cap a 7840HS above its own
+# admitted maximum. A band class applies by `cpuinfo_max_freq`, not by CPU numbering, because
+# this machine's numbering was never observed here.
+[[class]]
+name = "max"
+khz = 5100000
