@@ -212,7 +212,7 @@ fn check_managed(ctx: &Ctx<'_>) -> Result<Verdict> {
         .changes
         .iter()
         .filter_map(|c| match c {
-            converge::Planned::Managed { record, .. } => Some(record.as_str()),
+            converge::Planned::Managed { record } => Some(record.name.as_str()),
             _ => None,
         })
         .collect();

@@ -55,9 +55,11 @@ There is no lint config; `cargo clippy` is ad hoc.
 4. **`managed` owns one line** inside a foreign file, identified by an anchor pattern. Zero or
    several matches are hard errors and write nothing.
 5. **`check` + `report`** — one registry table (`check::REGISTRY`) drives report order, doc
-   anchors, apply reach and the JSON schema. Three rows (MIRROR, MANAGED, SYNC) are computed from
-   the same `converge::plan` that `apply` executes, so "apply said ok but live is wrong" is
-   structurally impossible.
+   anchors, apply reach and the JSON schema (2, with a top-level `profile`). Four rows (PROFILE,
+   MIRROR, MANAGED, SYNC, PRUNE) are computed from the same state `apply` executes — three from
+   `converge::plan`, PRUNE from the plan and the manifest — so "apply said ok but live is wrong"
+   is structurally impossible. `Reach::Intent` marks the rows no live observation can judge
+   (CO, POWER); their green means "declared", not "measured".
 6. **`ceil`, `ryzenadj`, `pass`** — the ceiling class map has one home shared by reader and writer;
    ryzenadj is argv-building only (packing arithmetic tested); `pass` dispatches boot/resume/ceil.
 7. **`import`** derives the intent from the shell engine's `state/` tree. Its acceptance is a

@@ -220,15 +220,12 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
 /// Not redundant with the intent file: these drift independently of any config, because TLP
 /// rewrites the dirty-writeback pair on every power-source event.
 fn reassert_sysctl(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()> {
+    // One derivation with the plan: the pass cannot disagree with `apply` about which value
+    // is wrong, which is how the IO row used to report a key the pass considered fine.
     let mut changed = Vec::new();
-    for (key, want) in &intent.sysctl {
-        let path = crate::converge::proc_sys_path(key);
-        let current = host.read_opt(&path).map(|raw| crate::converge::norm_sysctl(&raw));
-        if current.as_deref() == Some(crate::converge::norm_sysctl(want).as_str()) {
-            continue;
-        }
-        host.write(&path, want.as_bytes(), None)?;
-        changed.push(key.clone());
+    for drift in crate::converge::sysctl_drift(intent, host) {
+        host.write(&crate::converge::proc_sys_path(&drift.key), drift.want.as_bytes(), None)?;
+        changed.push(drift.key);
     }
     if !changed.is_empty() {
         report.say(format!("sysctl re-asserted: {}", changed.join(" ")));

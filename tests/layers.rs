@@ -232,6 +232,33 @@ fn a_profile_requirement_is_profile_drift_not_a_refusal_to_load() {
 }
 
 #[test]
+fn the_json_schema_states_the_selected_profile_and_whether_it_matched() {
+    let tree = Tree::new("profile-json")
+        .write_profile(
+            "p1",
+            "intent.toml",
+            "[requires]\nproduct = \"Right Machine\"\n",
+        )
+        .select("p1");
+    let host = tree.host();
+    std::fs::create_dir_all(tree.dir.join("live/sys/class/dmi/id")).unwrap();
+    std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Right Machine\n").unwrap();
+
+    let intent = tree.load().unwrap();
+    let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
+    let doc = genarch::report::json(&intent, &verdicts);
+    assert!(doc.starts_with("{\"schema\":2,\"profile\":{\"name\":\"p1\",\"matched\":true,"), "{doc}");
+    assert!(doc.contains("\"requires\":{\"product\":\"Right Machine\"}"), "{doc}");
+    assert!(genarch::report::scope_line(Some("p1")).starts_with("APPLY-SCOPE profile=p1 full="));
+
+    std::fs::write(tree.dir.join("live/sys/class/dmi/id/product_name"), "Other\n").unwrap();
+    let intent = tree.load().unwrap();
+    let verdicts = check::evaluate(&Ctx { host: &host, intent: &intent });
+    let doc = genarch::report::json(&intent, &verdicts);
+    assert!(doc.contains("\"matched\":false"), "{doc}");
+}
+
+#[test]
 fn only_a_profile_may_declare_requires_and_only_known_facts() {
     let tree = Tree::new("requires-scope")
         .write("intent.toml", &format!("schema = {SCHEMA_VERSION}\n[requires]\nproduct = \"X\"\n"));

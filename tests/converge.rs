@@ -519,6 +519,32 @@ fn is_deployable_name_matches_the_paid_for_list() {
 }
 
 #[test]
+fn a_plan_carries_the_managed_record_it_will_write() {
+    // The variant used to hold a record *name* and `apply` searched the intent for it, so a
+    // plan could name a record its own intent no longer had. The plan is now executable on
+    // its own: this test consumes it without consulting the intent at all.
+    let case = Case::new("plan-carries-record");
+    case.write_intent_meta();
+    case.write_live("/etc/m.conf", "SystemMaxUse=32M\n");
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/m.conf\"\nmatch = '^SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    let plan = converge::plan(&intent, &host).unwrap();
+    let Planned::Managed { record } = &plan.changes[0] else {
+        panic!("expected a managed change: {plan:?}");
+    };
+    assert_eq!(record.name, "journald");
+    assert_eq!(record.line, "SystemMaxUse=256M");
+
+    genarch::managed::replace(&host, record).unwrap();
+    assert_eq!(case.read_live("/etc/m.conf"), "SystemMaxUse=256M\n");
+}
+
+#[test]
 fn planned_variants_are_reachable_from_the_plan() {
     let case = Case::new("planned");
     case.write_intent_meta();

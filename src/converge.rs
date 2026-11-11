@@ -27,14 +27,32 @@ use crate::host::Host;
 use crate::intent::{Intent, ManagedRecord};
 use crate::managed::{self, State as ManagedState};
 
+/// One planned change, carrying everything `apply` needs.
+///
+/// The managed variant used to hold a record *name*, so `apply` searched the intent and could
+/// fail with "plan named an unknown record" — a plan that disagrees with its own input. It now
+/// carries the record, so a plan is executable on its own and there is one match to keep
+/// exhaustive instead of five that can drift apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Planned {
     /// Deploy these bytes, replacing whatever is live.
     Owned { live: String, mode: u32, bytes: Vec<u8> },
     /// Patch one anchored line inside a file the engine only partly owns.
-    Managed { record: String, target: String },
+    Managed { record: ManagedRecord },
     /// Delete a live file this engine wrote earlier and no longer ships.
     Prune { live: String },
+}
+
+impl Planned {
+    /// The live path this change touches: one name for the printer, the pre-image pass and
+    /// the reload predicate.
+    pub fn live(&self) -> &str {
+        match self {
+            Planned::Owned { live, .. } => live,
+            Planned::Managed { record } => &record.target,
+            Planned::Prune { live } => live,
+        }
+    }
 }
 
 /// A sysctl value the plan wants live, with what is live now.
@@ -140,10 +158,9 @@ pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
         let probe = managed::probe(host, record)?;
         match &probe.state {
             ManagedState::Ok => {}
-            ManagedState::Differs { .. } => plan.changes.push(Planned::Managed {
-                record: record.name.clone(),
-                target: record.target.clone(),
-            }),
+            ManagedState::Differs { .. } => {
+                plan.changes.push(Planned::Managed { record: record.clone() })
+            }
             _ => plan.anomalies.push(probe.message.clone()),
         }
     }
@@ -163,21 +180,34 @@ pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
         }
     }
 
-    for (key, want) in &intent.sysctl {
-        let current = host
-            .read_opt(&proc_sys_path(key))
-            .map(|raw| norm_sysctl(&raw));
-        match &current {
-            Some(cur) if cur == &norm_sysctl(want) => {}
-            _ => plan.sysctl.push(SysctlDrift {
+    plan.sysctl = sysctl_drift(intent, host);
+
+    Ok(plan)
+}
+
+/// Every runtime sysctl value that differs from the intent.
+///
+/// The one derivation. The plan, the report rows (`SYNC` reads the plan) and the scheduled
+/// passes all call this: the IO row used to re-read two of these keys with its own path and
+/// whitespace handling, so one rule had four homes and the rows could disagree about the same
+/// kernel value.
+pub fn sysctl_drift(intent: &Intent, host: &dyn Host) -> Vec<SysctlDrift> {
+    intent
+        .sysctl
+        .iter()
+        .filter_map(|(key, want)| {
+            let current = host.read_opt(&proc_sys_path(key)).map(|raw| norm_sysctl(&raw));
+            let matches = current
+                .as_deref()
+                .map(|cur| cur == norm_sysctl(want))
+                .unwrap_or(false);
+            (!matches).then(|| SysctlDrift {
                 key: key.clone(),
                 want: want.clone(),
                 current,
-            }),
-        }
-    }
-
-    Ok(plan)
+            })
+        })
+        .collect()
 }
 
 /// What `apply` did, for the operator summary.
@@ -211,12 +241,7 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
 
     // Pre-images for every file that will change, before the first write.
     for change in &plan.changes {
-        let live = match change {
-            Planned::Owned { live, .. } => live.clone(),
-            Planned::Managed { target, .. } => target.clone(),
-            Planned::Prune { live } => live.clone(),
-        };
-        if let Some(backup) = pre_image(host, &live)? {
+        if let Some(backup) = pre_image(host, change.live())? {
             outcome.backups.push(backup);
         }
     }
@@ -227,16 +252,9 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
                 host.write(live, bytes, Some(*mode))?;
                 outcome.applied.push(live.clone());
             }
-            Planned::Managed { record, .. } => {
-                let rec = intent
-                    .managed
-                    .iter()
-                    .find(|r| &r.name == record)
-                    .ok_or_else(|| {
-                        Failure::partial(format!("plan named an unknown managed record: {record}"))
-                    })?;
-                managed::replace(host, rec)?;
-                outcome.applied.push(format!("{} ({})", rec.target, rec.name));
+            Planned::Managed { record } => {
+                managed::replace(host, record)?;
+                outcome.applied.push(format!("{} ({})", record.target, record.name));
             }
             Planned::Prune { live } => {
                 if host.exists(live) {
@@ -259,17 +277,14 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
 
     // Reloads: only for the subsystems a write actually touched.
     let needs_daemon_reload = plan.changes.iter().any(|c| {
-        let live = change_live(c);
+        let live = c.live();
         live.contains("/systemd/") || live.ends_with(".service") || live.ends_with(".timer")
     });
     if needs_daemon_reload {
         host.run(&["systemctl".into(), "daemon-reload".into()])?;
         outcome.reloads.push("systemctl daemon-reload".into());
     }
-    let needs_udev_reload = plan
-        .changes
-        .iter()
-        .any(|c| change_live(c).contains("/udev/rules.d/"));
+    let needs_udev_reload = plan.changes.iter().any(|c| c.live().contains("/udev/rules.d/"));
     if needs_udev_reload {
         host.run(&["udevadm".into(), "control".into(), "--reload".into()])?;
         outcome.reloads.push("udevadm control --reload".into());
@@ -292,14 +307,6 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
     }
 
     Ok((plan, outcome))
-}
-
-fn change_live(change: &Planned) -> String {
-    match change {
-        Planned::Owned { live, .. } => live.clone(),
-        Planned::Managed { target, .. } => target.clone(),
-        Planned::Prune { live } => live.clone(),
-    }
 }
 
 /// A dated pre-image (`<target>.bak-YYYYMMDD`), never overwritten within a day.

@@ -103,12 +103,17 @@ fn json_lists_every_registry_row_and_carries_the_scope() {
     let host = FixtureHost::new(dir.join("live"));
     let verdicts = check::evaluate(&check::Ctx { host: &host, intent: &intent });
 
-    let doc = report::json(&verdicts);
+    let doc = report::json(&intent, &verdicts);
     for id in check::ids() {
         assert!(doc.contains(&format!("\"id\":\"{id}\"")), "{id} missing from the json document");
     }
-    assert!(doc.starts_with("{\"schema\":1,"), "{doc}");
-    assert!(report::scope_line().starts_with("APPLY-SCOPE full="), "{}", report::scope_line());
+    assert!(doc.starts_with("{\"schema\":2,"), "{doc}");
+    assert!(doc.contains("\"profile\":null"), "no profile must be null, not omitted: {doc}");
+    assert!(
+        report::scope_line(None).starts_with("APPLY-SCOPE profile=none full="),
+        "{}",
+        report::scope_line(None)
+    );
 
     // Class vocabulary is the operator's: all five must be expressible.
     for class in [Class::Ok, Class::Accepted, Class::Warn, Class::Drift, Class::Skipped] {

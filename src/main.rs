@@ -35,7 +35,7 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
             let ctx = Ctx { host: &host, intent: &intent };
             let verdicts = check::evaluate(&ctx);
             if json {
-                println!("{}", report::json(&verdicts));
+                println!("{}", report::json(&intent, &verdicts));
             } else {
                 print!("{}", report::table(&verdicts));
             }
@@ -110,8 +110,8 @@ fn print_plan(plan: &converge::Plan, dry_run: bool) {
     for change in &plan.changes {
         match change {
             converge::Planned::Owned { live, .. } => println!("  OWNED {live}"),
-            converge::Planned::Managed { record, target } => {
-                println!("  MANAGED {target} ({record})")
+            converge::Planned::Managed { record } => {
+                println!("  MANAGED {} ({})", record.target, record.name)
             }
             converge::Planned::Prune { live } => println!("  PRUNE {live} (no longer shipped)"),
         }
@@ -127,7 +127,7 @@ fn print_plan(plan: &converge::Plan, dry_run: bool) {
     for anomaly in &plan.anomalies {
         eprintln!("  ANOMALY {anomaly}");
     }
-    println!("{}", report::scope_line());
+    println!("{}", report::scope_line(plan.profile.as_deref()));
     if dry_run {
         println!("DRY-RUN nothing written");
     }

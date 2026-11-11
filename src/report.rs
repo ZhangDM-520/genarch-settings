@@ -10,6 +10,7 @@
 
 use crate::check::{self, Class, Reach, Verdict};
 use crate::exit::Exit;
+use crate::intent::Intent;
 
 pub fn exit_code(verdicts: &[Verdict]) -> Exit {
     if verdicts.iter().any(|v| v.class == Class::Drift) {
@@ -61,7 +62,10 @@ pub fn summary_line(verdicts: &[Verdict]) -> String {
 
 /// Which rows `apply` can reach, as one line. `apply` exiting 0 never implies the report is
 /// green, so the reach is printed rather than implied.
-pub fn scope_line() -> String {
+///
+/// The selected profile leads the line: the same reach means something different when the
+/// machine layer is missing or belongs to another laptop.
+pub fn scope_line(profile: Option<&str>) -> String {
     let mut full = Vec::new();
     let mut file_only = Vec::new();
     let mut intent = Vec::new();
@@ -82,7 +86,8 @@ pub fn scope_line() -> String {
         }
     };
     format!(
-        "APPLY-SCOPE full={} file-only={} intent={} none={}",
+        "APPLY-SCOPE profile={} full={} file-only={} intent={} none={}",
+        profile.unwrap_or("none"),
         join(full),
         join(file_only),
         join(intent),
@@ -105,8 +110,38 @@ fn json_escape(value: &str) -> String {
     out
 }
 
-/// Stable schema: `{"schema":1,"checks":[{"id","class","detail","doc","reach"}],"summary":{…}}`.
-pub fn json(verdicts: &[Verdict]) -> String {
+/// The selected profile, as the machine-readable schema states it.
+///
+/// `matched` is read from the `PROFILE` verdict rather than re-derived: one judgement, one
+/// place. No profile is `null`, not an empty object — "none selected" and "selected, matches"
+/// must not be confusable by a consumer.
+fn profile_json(intent: &Intent, verdicts: &[Verdict]) -> String {
+    let Some(profile) = &intent.profile else {
+        return "null".to_string();
+    };
+    let matched = verdicts
+        .iter()
+        .find(|v| v.id == "PROFILE")
+        .map(|v| v.class != Class::Drift)
+        .unwrap_or(false);
+    let requires = profile
+        .requires
+        .iter()
+        .map(|(fact, want)| format!("\"{}\":\"{}\"", json_escape(fact), json_escape(want)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"name\":\"{}\",\"matched\":{},\"requires\":{{{}}}}}",
+        json_escape(&profile.name),
+        matched,
+        requires
+    )
+}
+
+/// Stable schema, version 2: a top-level `profile` object joins the checks and the summary.
+/// Version 1 consumers see a new key, not a changed one; the version says which shape they
+/// are reading.
+pub fn json(intent: &Intent, verdicts: &[Verdict]) -> String {
     let mut checks = Vec::new();
     for verdict in verdicts {
         let entry = check::REGISTRY.iter().find(|c| c.id == verdict.id);
@@ -122,7 +157,8 @@ pub fn json(verdicts: &[Verdict]) -> String {
         ));
     }
     format!(
-        "{{\"schema\":1,\"checks\":[{}],\"summary\":{{\"ok\":{},\"accepted\":{},\"warn\":{},\"drift\":{},\"skipped\":{},\"exit\":{}}}}}",
+        "{{\"schema\":2,\"profile\":{},\"checks\":[{}],\"summary\":{{\"ok\":{},\"accepted\":{},\"warn\":{},\"drift\":{},\"skipped\":{},\"exit\":{}}}}}",
+        profile_json(intent, verdicts),
         checks.join(","),
         count(verdicts, Class::Ok),
         count(verdicts, Class::Accepted),
