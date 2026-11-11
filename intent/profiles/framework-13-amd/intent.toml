@@ -16,7 +16,6 @@ source = [
   "https://github.com/FrameworkComputer/framework-system/blob/main/framework_lib/src/smbios.rs",
   "https://www.amd.com/en/products/processors/laptop/ryzen/7000-series/amd-ryzen-7-7840u.html",
   "https://www.amd.com/en/products/processors/laptop/ryzen/7000-series/amd-ryzen-5-7640u.html",
-  "https://knowledgebase.frame.work/en_us/optimizing-ubuntu-battery-life-Sye_48Lg3",
 ]
 
 [requires]

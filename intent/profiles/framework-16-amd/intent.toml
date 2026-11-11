@@ -1,8 +1,9 @@
 # Framework Laptop 16, AMD (Ryzen 7040 series mainboard).
 #
-# The 7840HS and 7940HS ship on the same mainboard and report the *same* product string —
-# Framework's own detection has one entry for the whole 7040 family — so one profile covers
-# both. Two profiles would make one of them unreachable.
+# The 7840HS and 7940HS report the *same* product string — Framework's own detection has one
+# entry for the whole 7040 family — so one profile covers both; two profiles would make one of
+# them unreachable. They do not share a mainboard (the probes show FRANMZCP07 and FRANMZCP09),
+# which is why the ceiling is a band rather than a per-board rule.
 #
 # Documented, not measured: no file is deployed, no curve offset is set and no wake list is
 # guessed, because none of those can be published. `docs/PROFILES.md` is the contract.
@@ -11,7 +12,8 @@ source = [
   "https://github.com/FrameworkComputer/framework-system/blob/main/framework_lib/src/smbios.rs",
   "https://linux-hardware.org/?probe=499b81bf12",
   "https://www.amd.com/en/products/processors/laptop/ryzen/7000-series/amd-ryzen-7-7840hs.html",
-  "https://wiki.archlinux.org/title/Framework_Laptop_16",
+  "https://www.amd.com/en/products/processors/laptop/ryzen/7000-series/amd-ryzen-9-7940hs.html",
+  "https://knowledgebase.frame.work/en_us/optimizing-ubuntu-battery-life-Sye_48Lg3",
 ]
 
 [requires]
