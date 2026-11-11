@@ -4,8 +4,9 @@
 //!
 //! - [`cli`] parses the four verbs and maps outcomes to exit codes.
 //! - [`check`] holds the registry and one check per knob; [`report`] formats verdicts.
-//! - [`converge`] plans and applies the intent; [`managed`] patches single lines in
-//!   foreign files; [`import`] derives the intent from a legacy `state/` tree.
+//! - [`intent`] resolves the layers into one declared state; [`converge`] plans and applies
+//!   it; [`managed`] patches single lines in foreign files; [`import`] derives a machine
+//!   profile from a legacy `state/` tree; [`tree`] owns what may ship.
 //! - [`host`] is the seam to the machine: the only module that touches the filesystem,
 //!   the process table or systemd, and the only one tests substitute.
 //!
@@ -25,5 +26,6 @@ pub mod managed;
 pub mod pass;
 pub mod report;
 pub mod ryzenadj;
+pub mod tree;
 
 pub use exit::{Exit, Failure, Result};

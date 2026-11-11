@@ -1,43 +1,137 @@
-//! The ceiling rule: topology decides the class, and there is exactly one place that
+//! The ceiling rule: declared classes decide the cap, and there is exactly one place that
 //! decides it.
 //!
 //! This module exists because the shell engine once classified policies two different ways
 //! — a topology map in the reader, `cpuinfo_max_freq` in the writer — so a low readback
 //! could silently cap the fast cores at the slow ceiling while the report stayed green.
-//! Reader and writer call [`want_for_policy`] here; nothing else may restate the map or the
-//! kHz values.
+//! Reader ([`want_for_policy`], used by the CEIL row) and writer (
+//! [`crate::pass::apply_ceil`]) call this module; nothing else may restate the map or a kHz
+//! value.
+//!
+//! The classes themselves are data (`ceil.toml` in a layer), not constants: a ceiling is a
+//! measurement of one SoC, and a second AMD laptop must not inherit this one's numbers.
+
+use std::collections::BTreeSet;
+
+use serde::Deserialize;
 
 use crate::exit::{Failure, Result};
 use crate::host::Host;
 
-/// Ceiling for the Zen 5 cores, kHz. Owner ruling: 4.7 GHz.
-pub const ZEN5_KHZ: u32 = 4_700_000;
-/// Ceiling for the Zen 5c cores, kHz. Owner ruling: 3.2 GHz.
-pub const ZEN5C_KHZ: u32 = 3_200_000;
-
-/// Class map: Zen 5 is CPUs 0-3 and 12-15 (the top half of each Zen 5 / Zen 5c pair).
-///
-/// The map is a property of this SoC, not of a policy index, which is why it is a CPU set
-/// and not "policies 0 and 2". `related_cpus` is the truth; `cpuinfo_max_freq` is only a
-/// fallback for when the topology file is unreadable.
-pub fn is_zen5_cpu(cpu: u32) -> bool {
-    (0..=3).contains(&cpu) || (12..=15).contains(&cpu)
+/// The declared ceiling classes, in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CeilConfig {
+    pub classes: Vec<CeilClass>,
 }
 
-/// The ceiling a policy should carry, in kHz.
-pub fn want_from_cpus(cpus: &[u32]) -> u32 {
-    // A policy holding any Zen 5 core takes the Zen 5 ceiling: capping it lower would bind
-    // those cores below their own admitted ceiling, which is a power cap, not a tail trim.
-    if cpus.iter().any(|c| is_zen5_cpu(*c)) {
-        ZEN5_KHZ
-    } else {
-        ZEN5C_KHZ
+/// One class: a CPU set and the ceiling those cores take, in kHz.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CeilClass {
+    pub name: String,
+    pub khz: u32,
+    pub cpus: BTreeSet<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    #[serde(default)]
+    class: Vec<ClassFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClassFile {
+    name: String,
+    cpus: Vec<String>,
+    khz: u32,
+}
+
+impl CeilConfig {
+    /// Parse and validate `ceil.toml`.
+    ///
+    /// A class with no CPU or no ceiling is a config error, not an empty class: it would
+    /// silently leave a policy uncapped, which is the failure this module exists to prevent.
+    pub fn parse(text: &str, path: &std::path::Path) -> Result<CeilConfig> {
+        let file: File = toml::from_str(text)
+            .map_err(|e| Failure::precondition(format!("parse {}: {e}", path.display())))?;
+        if file.class.is_empty() {
+            return Err(Failure::precondition(format!(
+                "{} declares no [[class]]: a ceiling map with no classes is not a policy",
+                path.display()
+            )));
+        }
+        let mut classes: Vec<CeilClass> = Vec::new();
+        for class in file.class {
+            let name = class.name.trim().to_string();
+            if name.is_empty() {
+                return Err(Failure::precondition(format!(
+                    "{}: a [[class]] has an empty name",
+                    path.display()
+                )));
+            }
+            if classes.iter().any(|c| c.name == name) {
+                return Err(Failure::precondition(format!(
+                    "{}: duplicate ceiling class '{name}'",
+                    path.display()
+                )));
+            }
+            if class.khz == 0 {
+                return Err(Failure::precondition(format!(
+                    "{}: class '{name}' declares no khz",
+                    path.display()
+                )));
+            }
+            let mut cpus = BTreeSet::new();
+            for chunk in &class.cpus {
+                cpus.extend(parse_cpu_list(chunk));
+            }
+            if cpus.is_empty() {
+                return Err(Failure::precondition(format!(
+                    "{}: class '{name}' names no CPUs",
+                    path.display()
+                )));
+            }
+            classes.push(CeilClass { name, khz: class.khz, cpus });
+        }
+        Ok(CeilConfig { classes })
+    }
+
+    /// The ceiling a policy should carry when its CPU set is known.
+    ///
+    /// A policy holding any core of a class takes that class's ceiling; when classes overlap,
+    /// the highest ceiling wins, because capping a policy below a core's own admitted ceiling
+    /// is a power cap, not a tail trim.
+    pub fn want_from_cpus(&self, cpus: &[u32]) -> Option<u32> {
+        self.classes
+            .iter()
+            .filter(|class| cpus.iter().any(|cpu| class.cpus.contains(cpu)))
+            .map(|class| class.khz)
+            .max()
+    }
+
+    /// The ceiling a policy should carry when only `cpuinfo_max_freq` is readable.
+    ///
+    /// The largest declared ceiling that a policy admitting `imax` could plausibly have, and
+    /// the smallest class when even that is below every ceiling. This replaces the shell
+    /// engine's `> 4_400_000` threshold, which was one SoC's number compiled into the binary.
+    pub fn fallback_from_cpuinfo(&self, imax: u32) -> Option<u32> {
+        let below = self.classes.iter().filter(|c| c.khz <= imax).map(|c| c.khz).max();
+        below.or_else(|| self.classes.iter().map(|c| c.khz).min())
+    }
+
+    /// One line naming the classes, for the CEIL verdict.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> =
+            self.classes.iter().map(|c| format!("{} {}", c.name, c.khz)).collect();
+        parts.sort();
+        parts.join(" / ")
     }
 }
 
+/// `0-3,12-15` and `0 1 2 3` both parse: a kernel that changes the format must degrade to a
+/// parse, not to a silent wrong class.
 fn parse_cpu_list(raw: &str) -> Vec<u32> {
-    // `related_cpus` is a space-separated list, but tolerate the `0-3,12-15` form too: a
-    // kernel that changes the format must degrade to a parse, not to a silent wrong class.
     let mut out = Vec::new();
     for chunk in raw.split([',', ' ']).filter(|c| !c.trim().is_empty()) {
         match chunk.split_once('-') {
@@ -57,11 +151,18 @@ fn parse_cpu_list(raw: &str) -> Vec<u32> {
 }
 
 /// Ceiling for one cpufreq policy directory.
-pub fn want_for_policy(host: &dyn Host, policy_dir: &str) -> Result<u32> {
+///
+/// `None` means no ceiling classes are declared, which is a legal host state: the caller
+/// reports `SKIPPED` and the pass touches nothing.
+pub fn want_for_policy(host: &dyn Host, ceil: &CeilConfig, policy_dir: &str) -> Result<Option<u32>> {
     if let Some(raw) = host.read_opt(&format!("{policy_dir}/related_cpus")) {
         let cpus = parse_cpu_list(&raw);
         if !cpus.is_empty() {
-            return Ok(want_from_cpus(&cpus));
+            return ceil.want_from_cpus(&cpus).map(Some).ok_or_else(|| {
+                Failure::partial(format!(
+                    "{policy_dir}: CPUs {cpus:?} are not in any declared ceiling class"
+                ))
+            });
         }
     }
     let imax = host
@@ -72,9 +173,7 @@ pub fn want_for_policy(host: &dyn Host, policy_dir: &str) -> Result<u32> {
                 "{policy_dir}: neither related_cpus nor cpuinfo_max_freq is readable"
             ))
         })?;
-    // The fallback threshold is deliberately above the Zen 5c ceiling: a policy that admits
-    // more than 4.4 GHz is a fast-core policy even when the topology file is missing.
-    Ok(if imax > 4_400_000 { ZEN5_KHZ } else { ZEN5C_KHZ })
+    Ok(ceil.fallback_from_cpuinfo(imax))
 }
 
 /// Every cpufreq policy directory, sorted.
@@ -99,31 +198,50 @@ pub fn policies(host: &dyn Host) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn class_map_is_the_top_half_of_each_pair() {
-        for cpu in 0..=3 {
-            assert!(is_zen5_cpu(cpu), "{cpu} should be Zen 5");
-        }
-        for cpu in 4..=11 {
-            assert!(!is_zen5_cpu(cpu), "{cpu} should be Zen 5c");
-        }
-        for cpu in 12..=15 {
-            assert!(is_zen5_cpu(cpu), "{cpu} should be Zen 5");
-        }
-        for cpu in 16..=23 {
-            assert!(!is_zen5_cpu(cpu), "{cpu} should be Zen 5c");
-        }
+    fn two_classes() -> CeilConfig {
+        CeilConfig::parse(
+            "[[class]]\nname = \"zen5\"\ncpus = [\"0-3\", \"12-15\"]\nkhz = 4700000\n\
+             [[class]]\nname = \"zen5c\"\ncpus = [\"4-11\", \"16-23\"]\nkhz = 3200000\n",
+            std::path::Path::new("ceil.toml"),
+        )
+        .unwrap()
     }
 
     #[test]
-    fn any_fast_core_decides_the_policy() {
-        assert_eq!(want_from_cpus(&[0, 12]), ZEN5_KHZ);
-        assert_eq!(want_from_cpus(&[4, 16]), ZEN5C_KHZ);
+    fn class_map_is_the_top_half_of_each_pair() {
+        let ceil = two_classes();
+        assert_eq!(ceil.want_from_cpus(&[0, 12]), Some(4_700_000));
+        assert_eq!(ceil.want_from_cpus(&[4, 16]), Some(3_200_000));
+        assert_eq!(ceil.want_from_cpus(&[]), None);
+        assert_eq!(ceil.want_from_cpus(&[99]), None);
     }
 
     #[test]
     fn parses_both_list_forms() {
         assert_eq!(parse_cpu_list("0 1 2 3"), vec![0, 1, 2, 3]);
         assert_eq!(parse_cpu_list("0-3,12-15"), vec![0, 1, 2, 3, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn cpuinfo_fallback_never_caps_below_an_admitted_ceiling() {
+        let ceil = two_classes();
+        assert_eq!(ceil.fallback_from_cpuinfo(4_700_000), Some(4_700_000));
+        assert_eq!(ceil.fallback_from_cpuinfo(3_200_000), Some(3_200_000));
+        // Below every declared ceiling: the smallest class, never zero and never a guess.
+        assert_eq!(ceil.fallback_from_cpuinfo(1_000), Some(3_200_000));
+    }
+
+    #[test]
+    fn an_empty_or_duplicate_class_map_is_refused() {
+        let path = std::path::Path::new("ceil.toml");
+        assert!(CeilConfig::parse("", path).is_err(), "no classes must be refused");
+        for text in [
+            "[[class]]\nname = \"a\"\ncpus = [\"0\"]\nkhz = 0\n",
+            "[[class]]\nname = \"a\"\ncpus = []\nkhz = 1\n",
+            "[[class]]\nname = \"\"\ncpus = [\"0\"]\nkhz = 1\n",
+            "[[class]]\nname = \"a\"\ncpus = [\"0\"]\nkhz = 1\n[[class]]\nname = \"a\"\ncpus = [\"1\"]\nkhz = 2\n",
+        ] {
+            assert!(CeilConfig::parse(text, path).is_err(), "{text:?} must be refused");
+        }
     }
 }

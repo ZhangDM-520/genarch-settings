@@ -117,14 +117,38 @@ found in external review and fixed here:
   because systemd-sleep executes every file in the directory, whatever its name.
 
 Also in this round: kernel attributes use exactly one `write(2)`; a rehearsal root truncates;
-`mirror`/`prune`/`managed` are pairwise disjoint; the scheduled passes take the apply lock and log
-a skip instead of interleaving with an apply.
+`mirror` and `managed` are disjoint; the scheduled passes take the apply lock and log a skip
+instead of interleaving with an apply.
+
+## Layers and profiles (settled 2026-11-11)
+
+The engine was generic and the shipped data was one laptop: `/etc/fstab` with this disk's UUIDs,
+this user's autostart entries, this silicon's offsets, and — through absent fields — this SoC's
+wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was a fork.
+
+- **Three layers, one intent.** Base (`/usr/lib/genarch`) carries only what is true of any host;
+  the profile (`profiles/<name>`, selected by `profile = "<name>"` in `/etc/genarch/profile`)
+  carries every measurement and identity; the operator (`/etc/genarch`) has the last word. Base
+  and profile are themselves layered per class, so an operator file does not shadow a whole tree.
+- **Per-class merge, not whole-file.** Scalar maps merge per key (`sysctl`, `ryzenadj`, `passes`);
+  lists replace wholesale; mirrors and managed records are whole-file with an `[omit]` tombstone.
+  Copying sixteen keys to change three was the interface that made a fork cheaper than a config.
+- **Empty is legal, and it is not a guess.** With no profile the intent is the base, the rows that
+  need a machine fact say SKIPPED, and no default is invented. A profile declares `[requires]`
+  (DMI product/vendor); a mismatch is `PROFILE` drift (exit 1), not a refusal to load.
+- **Ownership outlives selection.** A deselected profile's mirrors stay in the manifest as dormant
+  ownership, because a lost selection must not prune `/etc/fstab`. Deleting the profile does hand
+  its files back.
+- **Ceilings and pass literals are data.** `ceil.toml` maps CPU sets to kHz (reader and writer share
+  it), and `passes.toml` carries the wake list, USB ID, interface and settle delay. The code
+  defaults are gone; there is nothing left to inherit silently.
+- **`tree` breaks the intent↔converge cycle.** Walking, the deployable-name rule and the live-path
+  mapping live there, so `intent` no longer calls into `converge` and the importer stops carrying a
+  second walker.
 
 ## Open
 
 - License and repository metadata (owner decision).
-- Whether `hw-tune.fish` should be pruned at cutover (it is imported for byte-parity today; the
-  engine replaces it, so the cutover intent drops it and `apply` prunes it).
 
 ## Closed
 

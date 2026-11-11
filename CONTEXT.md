@@ -15,8 +15,21 @@ knob is a value in the intent or a file the engine deploys verbatim.
 ceiling). A knob has exactly one home for its value; the ledger records *why*, never the number.
 
 **Intent** — the whole declared state: typed config (`sysctl.toml`, `ryzenadj.toml`,
-`passes.toml`), byte-exact **mirror** files, and **managed records**. Loaded from
-`/usr/lib/genarch` with whole-file overrides from `/etc/genarch`.
+`passes.toml`), byte-exact **mirror** files, and **managed records**. Loaded from three
+**layers** (see below), never from one tree.
+
+**Layer** — one root in precedence order: **base** (`/usr/lib/genarch`), **profile**
+(`/usr/lib/genarch/profiles/<name>` or `/etc/genarch/profiles/<name>`), **operator**
+(`/etc/genarch`). Precedence is base → profile → operator; the operator layer always wins.
+Scalar maps merge per key, lists replace wholesale, and mirrors are whole-file with an explicit
+`omit = [...]` tombstone.
+
+**Profile** — the machine-specific layer: a directory shaped like the base, selected by the
+`profile = "<name>"` line in `/etc/genarch/profile`. It carries every fact that is a measurement
+or an identity — this silicon's curve offsets, this machine's ceilings, this disk's `fstab`, this
+user's paths. The base carries only what is true of any AMD laptop. **Empty is legal**: with no
+profile selected, absent sections do nothing and the rows that depend on them report `SKIPPED` —
+there are no host defaults in the binary.
 
 **Mirror** — a file the engine deploys byte for byte and does not interpret. It is how the
 engine owns `/etc/fstab`-shaped files without becoming a parser for every vendor format.
@@ -41,7 +54,9 @@ green.
 
 **Manifest** — the engine's ownership record (`/var/lib/genarch/manifest.toml`). It is what makes
 "one writer per file" checkable and what lets a target leave the intent without being forgotten
-on disk (**prune**).
+on disk (**prune**). It is the only source of a removal: there is no declared prune list. A path
+belonging to a profile that is merely not selected stays owned (**dormant**), so a lost selection
+cannot delete a system file.
 
 **Pre-image** — the dated `.bak-YYYYMMDD` copy taken before a write. Never deleted.
 

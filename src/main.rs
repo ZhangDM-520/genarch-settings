@@ -76,14 +76,20 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
             pass::run(&host, &intent, which.as_pass())?;
             Ok(Exit::Clean)
         }
-        Verb::Import { state, out } => {
-            let summary = import::run(&state, &out)?;
+        Verb::Import { state, profile_dir } => {
+            let summary = import::run(&state, &profile_dir)?;
             println!(
-                "IMPORTED mirror={} managed={} sysctl={}",
-                summary.mirror, summary.managed, summary.sysctl
+                "IMPORTED profile={} mirror={} managed={} sysctl={}",
+                profile_dir.display(),
+                summary.mirror,
+                summary.managed,
+                summary.sysctl
             );
             for skipped in &summary.skipped {
                 println!("  SKIPPED {skipped} (name marks a backup or editor artifact)");
+            }
+            for note in &summary.notes {
+                println!("  NOTE {note}");
             }
             Ok(Exit::Clean)
         }
@@ -91,6 +97,15 @@ fn run(cli: Cli) -> genarch::Result<Exit> {
 }
 
 fn print_plan(plan: &converge::Plan, dry_run: bool) {
+    match &plan.profile {
+        Some(name) => println!("PROFILE {name}"),
+        None => println!("PROFILE none (base intent only)"),
+    }
+    // A mis-selected profile applies the wrong machine's facts; say so beside the plan, and
+    // say it again after the apply, because that is when the operator is reading.
+    for mismatch in &plan.profile_mismatch {
+        eprintln!("  PROFILE-MISMATCH {mismatch}");
+    }
     println!("PLAN {} change(s)", plan.changes.len() + plan.sysctl.len() + plan.anomalies.len());
     for change in &plan.changes {
         match change {

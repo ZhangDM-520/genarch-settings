@@ -1,0 +1,14 @@
+# Ceiling classes for Strix Point (Ryzen AI 9 HX 370).
+#
+# A policy holding any core of a class takes that class's ceiling; when classes overlap the
+# highest wins, because capping a policy below a core's own admitted ceiling is a power cap,
+# not a tail trim. Reader and writer share this one map.
+[[class]]
+name = "zen5"
+cpus = ["0-3", "12-15"]
+khz = 4700000
+
+[[class]]
+name = "zen5c"
+cpus = ["4-11", "16-23"]
+khz = 3200000

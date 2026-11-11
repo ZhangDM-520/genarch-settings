@@ -49,6 +49,9 @@ pub enum Reach {
     Full,
     /// apply owns the file half; the live effect has another owner.
     FileOnly,
+    /// Judged against the intent only: no live observation is possible, so `apply` cannot
+    /// move it and a green row means "declared", not "measured".
+    Intent,
     /// apply cannot reach the row at all.
     None,
 }
@@ -58,6 +61,7 @@ impl Reach {
         match self {
             Reach::Full => "full",
             Reach::FileOnly => "file-only",
+            Reach::Intent => "intent",
             Reach::None => "none",
         }
     }
@@ -93,15 +97,15 @@ macro_rules! check {
 
 /// The registry. One row per knob; order is report order.
 pub const REGISTRY: &[Check] = &[
+    check!("PROFILE", "findings#intent", None, check_profile),
     check!("MIRROR", "findings#intent", Full, check_mirror),
     check!("MANAGED", "findings#managed", Full, check_managed),
     check!("SYNC", "findings#writeback", Full, check_sync),
     check!("CEIL", "findings#ceil", None, check_ceil),
-    check!("CO", "findings#co", None, check_co),
+    check!("CO", "findings#co", Intent, check_co),
     check!("SMU", "findings#ppt", None, check_smu),
-    check!("POWER", "findings#eco", None, check_power),
+    check!("POWER", "findings#eco", Intent, check_power),
     check!("WIFI", "findings#wifi", FileOnly, check_wifi),
-    check!("IO", "findings#writeback", Full, check_io),
     check!("TIMER", "findings#timer", None, check_timer),
     check!("PRUNE", "findings#intent", Full, check_prune),
 ];
@@ -125,6 +129,48 @@ pub fn evaluate(ctx: &Ctx<'_>) -> Vec<Verdict> {
 
 fn verdict(id: &'static str, class: Class, detail: impl Into<String>) -> Verdict {
     Verdict { id, class, detail: detail.into() }
+}
+
+/// Is the selected machine layer the one this machine is?
+///
+/// This is the row that makes a portable package honest: the engine does not refuse to load
+/// a profile for another laptop (the operator must still see the drift and be able to fix the
+/// selection), but every other row is qualified by this one.
+fn check_profile(ctx: &Ctx<'_>) -> Result<Verdict> {
+    let Some(profile) = &ctx.intent.profile else {
+        return Ok(verdict(
+            "PROFILE",
+            Class::Skipped,
+            "no profile selected (base intent only)",
+        ));
+    };
+    if profile.requires.is_empty() {
+        return Ok(verdict(
+            "PROFILE",
+            Class::Ok,
+            format!("profile '{}' declares no machine requirement", profile.name),
+        ));
+    }
+    let mismatch = ctx.intent.profile_mismatch(ctx.host);
+    if mismatch.is_empty() {
+        let required: Vec<String> =
+            profile.requires.iter().map(|(fact, want)| format!("{fact}={want}")).collect();
+        Ok(verdict(
+            "PROFILE",
+            Class::Ok,
+            format!("profile '{}' matches {}", profile.name, required.join(" ")),
+        ))
+    } else {
+        Ok(verdict(
+            "PROFILE",
+            Class::Drift,
+            format!(
+                "profile '{}' is not for this machine: {}",
+                profile.name,
+                mismatch.join("; ")
+            ),
+        ))
+    }
 }
 
 /// Byte-exact mirror targets: this is the row that answers "is live what we shipped".
@@ -206,14 +252,22 @@ fn check_sync(ctx: &Ctx<'_>) -> Result<Verdict> {
 }
 
 fn check_ceil(ctx: &Ctx<'_>) -> Result<Verdict> {
+    let Some(classes) = &ctx.intent.ceil else {
+        return Ok(verdict(
+            "CEIL",
+            Class::Skipped,
+            "no ceiling classes declared (ceil.toml)",
+        ));
+    };
     let policies = ceil::policies(ctx.host);
     if policies.is_empty() {
         return Ok(verdict("CEIL", Class::Skipped, "no cpufreq policies found"));
     }
     let mut bad = Vec::new();
     for policy in &policies {
-        let want = match ceil::want_for_policy(ctx.host, policy) {
-            Ok(w) => w,
+        let want = match ceil::want_for_policy(ctx.host, classes, policy) {
+            Ok(Some(w)) => w,
+            Ok(None) => continue,
             Err(e) => return Ok(verdict("CEIL", Class::Drift, e.message)),
         };
         let path = format!("{policy}/scaling_max_freq");
@@ -227,7 +281,11 @@ fn check_ceil(ctx: &Ctx<'_>) -> Result<Verdict> {
         verdict(
             "CEIL",
             Class::Ok,
-            format!("all {} policies capped {} / {}", policies.len(), ceil::ZEN5_KHZ, ceil::ZEN5C_KHZ),
+            format!(
+                "all {} policies capped {}",
+                policies.len(),
+                classes.summary()
+            ),
         )
     } else {
         verdict("CEIL", Class::Drift, bad.join(" "))
@@ -240,29 +298,40 @@ fn check_ceil(ctx: &Ctx<'_>) -> Result<Verdict> {
 /// disappearing from the intent — and says so, instead of pretending to measure the silicon.
 fn check_co(ctx: &Ctx<'_>) -> Result<Verdict> {
     let co = &ctx.intent.ryzenadj.co;
-    if co.all == 0 && co.per_core.is_empty() {
+    if co.all.is_none() && co.per_core.is_none() {
         return Ok(verdict(
             "CO",
-            Class::Drift,
-            "intent declares no curve-optimizer offset (hw-tune had coall + per-core)",
+            Class::Skipped,
+            "no curve-optimizer offset declared (the silicon is the profile's to describe)",
         ));
     }
     Ok(verdict(
         "CO",
         Class::Ok,
-        format!("intent declares coall {} + {} per-core offset(s)", co.all, co.per_core.len()),
+        format!(
+            "intent declares coall {} + {} per-core offset(s)",
+            co.all.map(|v| v.to_string()).unwrap_or_else(|| "unset".into()),
+            co.per_core.as_ref().map(|v| v.len()).unwrap_or(0)
+        ),
     ))
 }
 
 fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
+    let fields = &ctx.intent.smu;
+    let (Some(fast_label), Some(slow_label)) = (&fields.fast, &fields.slow) else {
+        return Ok(verdict(
+            "SMU",
+            Class::Skipped,
+            "no SMU field labels declared ([smu] in the intent)",
+        ));
+    };
     let result = ctx.host.run(&["ryzenadj".into(), "--info".into()]);
     let Ok(output) = result else {
         return Ok(verdict("SMU", Class::Skipped, "needs root (ryzenadj --info)"));
     };
     let text = output.stdout;
-    let fast = smu_value(&text, "PPT LIMIT FAST");
-    let slow = smu_value(&text, "PPT LIMIT SLOW");
-    let stapm = smu_value(&text, "STAPM LIMIT");
+    let fast = smu_value(&text, fast_label);
+    let slow = smu_value(&text, slow_label);
     let (Some(fast), Some(slow)) = (fast, slow) else {
         return Ok(verdict(
             "SMU",
@@ -279,25 +348,30 @@ fn check_smu(ctx: &Ctx<'_>) -> Result<Verdict> {
             format!("PPT FAST={fast} SLOW={slow} want {want_str}"),
         ));
     }
-    match stapm.as_deref() {
-        Some(v) if v == want_str => Ok(verdict(
-            "SMU",
-            Class::Ok,
-            format!("PPT FAST/SLOW/STAPM {v}"),
-        )),
+    let stapm = match &fields.stapm {
+        Some(label) => match smu_value(&text, label) {
+            Some(value) => value,
+            None => {
+                return Ok(verdict(
+                    "SMU",
+                    Class::Drift,
+                    format!("{label} readback unparseable (output format changed)"),
+                ));
+            }
+        },
+        // No label declared: the two envelope limits are all this intent can judge.
+        None => return Ok(verdict("SMU", Class::Ok, format!("PPT FAST={fast} SLOW={slow}"))),
+    };
+    match stapm.as_str() {
+        v if v == want_str => Ok(verdict("SMU", Class::Ok, format!("PPT FAST/SLOW/STAPM {v}"))),
         // ACCEPTED is scoped to a readback BELOW the envelope: the firmware's own floor.
-        Some(v) if v.parse::<f64>().map(|f| f < want.unwrap_or(f64::MAX)).unwrap_or(false) => Ok(
+        v if v.parse::<f64>().map(|f| f < want.unwrap_or(f64::MAX)).unwrap_or(false) => Ok(
             verdict("SMU", Class::Accepted, format!("STAPM {v} W, firmware preference")),
         ),
-        Some(v) => Ok(verdict(
+        v => Ok(verdict(
             "SMU",
             Class::Drift,
             format!("STAPM {v} above the {want_str} envelope"),
-        )),
-        None => Ok(verdict(
-            "SMU",
-            Class::Drift,
-            "STAPM readback unparseable (output format changed)",
         )),
     }
 }
@@ -319,23 +393,34 @@ fn smu_value(text: &str, field: &str) -> Option<String> {
 
 
 fn check_power(ctx: &Ctx<'_>) -> Result<Verdict> {
-    if ctx.intent.ryzenadj.limits.power_saving {
-        Ok(verdict(
+    match ctx.intent.ryzenadj.limits.power_saving {
+        Some(true) => Ok(verdict(
             "POWER",
             Class::Ok,
             "intent declares the SMU power-saving flag",
-        ))
-    } else {
-        Ok(verdict(
+        )),
+        // A profile may decline the flag on purpose; that is a declaration, not a lost knob.
+        Some(false) => Ok(verdict(
             "POWER",
-            Class::Drift,
-            "intent does not declare --power-saving (the hidden eco behaviour is gone)",
-        ))
+            Class::Ok,
+            "intent declines the SMU power-saving flag",
+        )),
+        None => Ok(verdict(
+            "POWER",
+            Class::Skipped,
+            "no --power-saving declaration (the silicon is the profile's to describe)",
+        )),
     }
 }
 
 fn check_wifi(ctx: &Ctx<'_>) -> Result<Verdict> {
-    let iface = ctx.intent.passes.wifi_interface.as_str();
+    let Some(iface) = ctx.intent.passes.wifi_interface.as_deref() else {
+        return Ok(verdict(
+            "WIFI",
+            Class::Skipped,
+            "profile declares no wifi_interface",
+        ));
+    };
     let result = ctx.host.run(&[
         "iw".into(),
         "dev".into(),
@@ -357,49 +442,25 @@ fn check_wifi(ctx: &Ctx<'_>) -> Result<Verdict> {
     }
 }
 
-fn check_io(ctx: &Ctx<'_>) -> Result<Verdict> {
-    // The writeback pair is the one sysctl family with a second writer (TLP rewrites it on
-    // every power-source event), so it gets its own row even though SYNC covers it.
-    let keys = ["vm.dirty_writeback_centisecs", "vm.dirty_expire_centisecs"];
-    let mut bad = Vec::new();
-    for key in keys {
-        let want = ctx.intent.sysctl.get(key);
-        let current = ctx
-            .host
-            .read_opt(&converge::proc_sys_path(key))
-            .map(|raw| converge::norm_sysctl(&raw));
-        match (want, current) {
-            (Some(want), Some(current)) if converge::norm_sysctl(want) == current => {}
-            (Some(want), current) => bad.push(format!(
-                "{key}={} want {want}",
-                current.as_deref().unwrap_or("unreadable")
-            )),
-            (None, _) => bad.push(format!("{key} not declared in intent")),
-        }
-    }
-    Ok(if bad.is_empty() {
-        verdict("IO", Class::Ok, "dirty writeback/expire hold their intent values")
-    } else {
-        verdict("IO", Class::Drift, bad.join(" "))
-    })
-}
-
 fn check_timer(ctx: &Ctx<'_>) -> Result<Verdict> {
-    const UNITS: &[&str] = &["genarch.service", "genarch-ceil.timer"];
+    let units = &ctx.intent.units;
+    if units.is_empty() {
+        return Ok(verdict(
+            "TIMER",
+            Class::Skipped,
+            "no units declared ([units] in the intent)",
+        ));
+    }
     let mut not_enabled = Vec::new();
-    for unit in UNITS {
-        let result = ctx.host.run(&[
-            "systemctl".into(),
-            "is-enabled".into(),
-            (*unit).to_string(),
-        ]);
+    for unit in units {
+        let result = ctx.host.run(&["systemctl".into(), "is-enabled".into(), unit.clone()]);
         let enabled = matches!(&result, Ok(o) if o.success);
         if !enabled {
-            not_enabled.push(*unit);
+            not_enabled.push(unit.clone());
         }
     }
     Ok(if not_enabled.is_empty() {
-        verdict("TIMER", Class::Ok, format!("{UNITS:?} enabled"))
+        verdict("TIMER", Class::Ok, format!("{units:?} enabled"))
     } else {
         verdict(
             "TIMER",
@@ -426,10 +487,11 @@ fn check_prune(ctx: &Ctx<'_>) -> Result<Verdict> {
         })
         .collect();
     Ok(if pending.is_empty() {
+        let manifest = converge::Manifest::load(ctx.host)?;
         verdict(
             "PRUNE",
             Class::Ok,
-            format!("{} declared removal(s), none present", ctx.intent.prune.len()),
+            format!("{} owned path(s) in the manifest, none to remove", manifest.owned.len()),
         )
     } else {
         verdict(

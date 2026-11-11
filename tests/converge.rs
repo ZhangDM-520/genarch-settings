@@ -10,6 +10,7 @@ use genarch::converge::{self, Planned};
 use genarch::host::{FixtureHost, Host};
 use genarch::intent::{Intent, SCHEMA_VERSION};
 use genarch::managed;
+use genarch::tree;
 
 struct Case {
     dir: PathBuf,
@@ -303,21 +304,24 @@ fn prune_removes_an_owned_target_that_left_the_intent() {
 
 #[test]
 fn prune_verdict_is_drift_not_a_warning() {
-    // A pending removal is the double-writer the cutover exists to prevent. Reporting it as
-    // WARN kept the exit code at 0, so a host with the shell engine still on disk read green.
+    // A stale owned file is the double-writer this engine exists to prevent. Reporting it as
+    // WARN kept the exit code at 0, so a host with a stale deploy still read green.
     let case = Case::new("prune-verdict");
-    std::fs::create_dir_all(case.intent()).unwrap();
+    case.write_intent_meta();
+    case.write_intent_mirror("/usr/local/sbin/eco-power.sh", "shipped\n");
+    case.write_live("/usr/local/sbin/eco-power.sh", "stale\n");
+    let host = case.host();
+    converge::apply(&case.load(), &host, false).unwrap();
+    // The engine now owns the path; the intent stops shipping it, so the manifest is the
+    // only record of what must disappear.
+    std::fs::remove_file(case.intent().join("mirror/usr/local/sbin/eco-power.sh")).unwrap();
     std::fs::write(
         case.intent().join("intent.toml"),
-        format!(
-            "schema = {SCHEMA_VERSION}\nprune = [\"/usr/local/sbin/eco-power.sh\"]\n"
-        ),
+        format!("schema = {SCHEMA_VERSION}\n"),
     )
     .unwrap();
-    case.write_live("/usr/local/sbin/eco-power.sh", "stale\n");
 
     let intent = case.load();
-    let host = case.host();
     let verdicts = genarch::check::evaluate(&genarch::check::Ctx { host: &host, intent: &intent });
     let prune = verdicts.iter().find(|v| v.id == "PRUNE").unwrap();
     assert_eq!(prune.class, genarch::check::Class::Drift, "{prune:?}");
@@ -507,10 +511,10 @@ fn is_deployable_name_matches_the_paid_for_list() {
         ".#x",
         "x.tmp",
     ] {
-        assert!(!converge::is_deployable_name(bad), "{bad} must not deploy");
+        assert!(!tree::is_deployable_name(bad), "{bad} must not deploy");
     }
     for good in ["x.conf", "eco-power", "hw-tune.fish", "10-eco.conf"] {
-        assert!(converge::is_deployable_name(good), "{good} must deploy");
+        assert!(tree::is_deployable_name(good), "{good} must deploy");
     }
 }
 
@@ -573,7 +577,12 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
         return;
     }
     let case = Case::new("import-roundtrip");
-    let out = case.dir.join("imported");
+    // The importer emits a machine profile, never a base: put it where a profile lives and
+    // select it, which is exactly how the package ships it.
+    let base = case.dir.join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
+    let out = base.join("profiles/imported");
     let summary = genarch::import::run(state, &out).unwrap();
     assert!(summary.mirror > 40, "expected the whole owned set, got {}", summary.mirror);
 
@@ -583,7 +592,7 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
         let rel = entry.strip_prefix(&owned).unwrap();
         let live = format!("/{}", rel.display());
         let base = live.rsplit('/').next().unwrap();
-        if !converge::is_deployable_name(base) {
+        if !tree::is_deployable_name(base) {
             continue;
         }
         let imported = out.join("mirror").join(rel);
@@ -597,14 +606,21 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
     assert!(checked > 40, "checked only {checked} files");
 
     // The intent must load, and loading must see the same bytes.
-    let intent = Intent::load(&out, &case.dir.join("no-overlay")).unwrap();
+    let overlay = case.dir.join("overlay");
+    std::fs::create_dir_all(&overlay).unwrap();
+    std::fs::write(overlay.join("profile"), "profile = \"imported\"\n").unwrap();
+    let intent = Intent::load(&base, &overlay).unwrap();
+    assert_eq!(intent.profile.as_ref().map(|p| p.name.as_str()), Some("imported"));
     assert_eq!(intent.mirror.len(), checked);
     assert_eq!(intent.managed.len(), 8, "eight managed records in the shell tree");
     assert!(intent.sysctl.len() >= 8, "sysctl values collapsed from sysctl.d");
-    assert_eq!(intent.ryzenadj.co.all, -7);
-    assert_eq!(intent.ryzenadj.co.per_core, vec![-24, -24, -21, -21, -9, -11, -8, -6]);
+    assert_eq!(intent.ryzenadj.co.all, Some(-7));
+    assert_eq!(
+        intent.ryzenadj.co.per_core,
+        Some(vec![-24, -24, -21, -21, -9, -11, -8, -6])
+    );
     assert_eq!(intent.ryzenadj.limits.fast, Some(31000));
-    assert!(intent.ryzenadj.limits.power_saving);
+    assert_eq!(intent.ryzenadj.limits.power_saving, Some(true));
     // hw-tune's queue has nothing the knobs do not model, so the escape hatch must stay empty:
     // a non-empty raw list here would mean the fish script's shell syntax leaked into argv.
     assert!(
@@ -633,26 +649,25 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn declared_prune_removes_a_path_that_should_not_exist() {
-    let case = Case::new("declared-prune");
+fn a_v2_intent_is_refused_instead_of_silently_losing_its_prune_list() {
+    // `prune` is gone: the manifest is the ownership record. An old intent must not load with
+    // its removals quietly ignored — that is the one failure mode a schema bump exists to
+    // prevent.
+    let case = Case::new("v2-intent");
     std::fs::create_dir_all(case.intent()).unwrap();
     std::fs::write(
         case.intent().join("intent.toml"),
         format!("schema = {SCHEMA_VERSION}\nprune = [\"/etc/eco-legacy.conf\"]\n"),
     )
     .unwrap();
-    case.write_live("/etc/eco-legacy.conf", "legacy\n");
 
-    let intent = case.load();
-    let host = case.host();
-    let plan = converge::plan(&intent, &host).unwrap();
-    assert_eq!(plan.changes.len(), 1);
-    assert!(matches!(plan.changes[0], Planned::Prune { .. }));
+    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
+    assert!(err.message.contains("prune"), "{}", err.message);
 
-    converge::apply(&intent, &host, false).unwrap();
-    assert!(!host.exists("/etc/eco-legacy.conf"));
-    // Idempotent: the second plan has nothing to remove.
-    assert!(converge::plan(&intent, &host).unwrap().is_empty());
+    // And a v2 schema number is refused with the schema message rather than parsed.
+    std::fs::write(case.intent().join("intent.toml"), "schema = 2\n").unwrap();
+    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
+    assert!(err.message.contains("schema 2"), "{}", err.message);
 }
 
 #[test]
@@ -688,29 +703,16 @@ fn sysctl_table_is_projected_into_one_file() {
 
 #[test]
 fn a_path_cannot_be_declared_by_two_owners() {
-    // mirror + prune on one path made apply write the file and immediately delete it: drift
-    // that never converges. mirror + managed fought over the same bytes.
+    // A whole-file write and a line patch on the same path fight over the same bytes, and a
+    // mirror the engine owns while a managed record patches it can never converge.
     let case = Case::new("one-owner");
-    std::fs::create_dir_all(case.intent()).unwrap();
-    std::fs::write(
-        case.intent().join("intent.toml"),
-        format!("schema = {SCHEMA_VERSION}\nprune = [\"/etc/dup.conf\"]\n"),
-    )
-    .unwrap();
+    case.write_intent_meta();
     case.write_intent_mirror("/etc/dup.conf", "x\n");
-
-    let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
-    assert!(err.message.contains("one path, one owner"), "{}", err.message);
-
-    std::fs::write(
-        case.intent().join("intent.toml"),
-        format!("schema = {SCHEMA_VERSION}\n"),
-    )
-    .unwrap();
     case.write_managed(
         "dup",
         "name = \"dup\"\ntarget = \"/etc/dup.conf\"\nmatch = '^k = '\nline = \"k = 1\"\n",
     );
+
     let err = Intent::load(&case.intent(), &case.dir.join("no-overlay")).unwrap_err();
     assert!(err.message.contains("one path, one owner"), "{}", err.message);
 }

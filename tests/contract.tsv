@@ -5,6 +5,7 @@
 # equal, equal to the compiled registry, and that every anchor resolves to a real `##`
 # heading. Edit both copies in one change or the gate fails: a silently skipped check is the
 # failure mode this seam exists to prevent.
+PROFILE	findings#intent
 MIRROR	findings#intent
 MANAGED	findings#managed
 SYNC	findings#writeback
@@ -13,6 +14,5 @@ CO	findings#co
 SMU	findings#ppt
 POWER	findings#eco
 WIFI	findings#wifi
-IO	findings#writeback
 TIMER	findings#timer
 PRUNE	findings#intent

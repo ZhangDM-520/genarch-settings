@@ -8,7 +8,7 @@
 
 use genarch::check::{self, Class, Reach};
 use genarch::host::FixtureHost;
-use genarch::intent::Intent;
+use genarch::intent::{Intent, SCHEMA_VERSION};
 use genarch::report;
 
 /// The ledger repo. `SYSTEM_TUNING_ROOT` exists for a checkout somewhere else; the default is
@@ -73,18 +73,22 @@ fn ids_are_unique_and_grouped_by_reach() {
 
     let mut full = 0;
     let mut file_only = 0;
+    let mut intent = 0;
     let mut none = 0;
     for check in check::REGISTRY {
         match check.reach {
             Reach::Full => full += 1,
             Reach::FileOnly => file_only += 1,
+            Reach::Intent => intent += 1,
             Reach::None => none += 1,
         }
     }
     // The split is reported, so it is contract: an `apply`-reachable row must be distinguishable
-    // from one only a service or a firmware can move.
-    assert!(full > 0 && file_only > 0 && none > 0, "{full}/{file_only}/{none}");
-    assert_eq!(full + file_only + none, ids.len());
+    // from one only a service or a firmware can move, and from one judged against the intent
+    // alone (no live observation exists).
+    assert!(full > 0 && file_only > 0 && none > 0, "{full}/{file_only}/{intent}/{none}");
+    assert!(intent > 0, "an intent-only row must say so");
+    assert_eq!(full + file_only + intent + none, ids.len());
 }
 
 #[test]
@@ -92,7 +96,7 @@ fn json_lists_every_registry_row_and_carries_the_scope() {
     let dir = std::env::temp_dir().join(format!("genarch-contract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("intent")).unwrap();
-    std::fs::write(dir.join("intent/intent.toml"), "schema = 2\n").unwrap();
+    std::fs::write(dir.join("intent/intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
     std::fs::create_dir_all(dir.join("live")).unwrap();
 
     let intent = Intent::load(&dir.join("intent"), &dir.join("none")).unwrap();

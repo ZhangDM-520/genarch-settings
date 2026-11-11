@@ -27,21 +27,6 @@ use crate::host::Host;
 use crate::intent::{Intent, ManagedRecord};
 use crate::managed::{self, State as ManagedState};
 
-/// Names that must never be deployed, even if they appear in the intent tree.
-///
-/// One home for the rule: `intent` validation and the plan both call this.
-pub fn is_deployable_name(name: &str) -> bool {
-    const BAD_SUFFIXES: &[&str] = &[".bak", "~", ".orig", ".rej", ".swp", ".tmp"];
-    if name.starts_with(".#") {
-        return false;
-    }
-    if BAD_SUFFIXES.iter().any(|s| name.ends_with(s)) {
-        return false;
-    }
-    // `*.bak-YYYYMMDD` is the pre-image convention itself.
-    !name.contains(".bak-") && name != ".bak"
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Planned {
     /// Deploy these bytes, replacing whatever is live.
@@ -66,9 +51,17 @@ pub struct Plan {
     /// Hard errors: a target that cannot be classified. Any entry here refuses the apply.
     pub anomalies: Vec<String>,
     pub sysctl: Vec<SysctlDrift>,
+    /// The selected profile (or `None` for base only), printed with the plan so an operator
+    /// can see which machine layer produced these changes.
+    pub profile: Option<String>,
+    /// Machine facts the profile requires but the host does not match. Non-empty is `PROFILE`
+    /// drift: the plan still applies, and the note is re-shown after the apply.
+    pub profile_mismatch: Vec<String>,
 }
 
 impl Plan {
+    /// Nothing to write. The profile note is not a change: it must not keep a converged host
+    /// from reporting empty, which would make every apply on a mis-selected profile exit 1.
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty() && self.sysctl.is_empty()
     }
@@ -106,7 +99,11 @@ pub fn proc_sys_path(key: &str) -> String {
 }
 
 pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
-    let mut plan = Plan::default();
+    let mut plan = Plan {
+        profile: intent.profile.as_ref().map(|p| p.name.clone()),
+        profile_mismatch: intent.profile_mismatch(host),
+        ..Plan::default()
+    };
 
     for target in &intent.mirror {
         // Non-deployable names are refused by the loader, so reaching here means the name is
@@ -148,13 +145,6 @@ pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
                 target: record.target.clone(),
             }),
             _ => plan.anomalies.push(probe.message.clone()),
-        }
-    }
-
-    for live in &intent.prune {
-        // A declared removal that still exists is a divergence, exactly like a stale file.
-        if host.exists(live) {
-            plan.changes.push(Planned::Prune { live: live.clone() });
         }
     }
 
@@ -341,16 +331,19 @@ pub fn pre_image(host: &dyn Host, live: &str) -> Result<Option<PathBuf>> {
     Ok(Some(PathBuf::from(backup)))
 }
 
-/// Live paths this engine authoritatively writes: mirror targets and the sysctl projection.
+/// Live paths this engine owns: mirror targets, the sysctl projection, and the mirrors of
+/// profiles it did not select.
 ///
 /// Only these are prune-eligible. A file the engine merely *patched* (a managed record) stays
 /// owned by its package, so deleting it because the record left the intent would delete the
-/// package's config.
+/// package's config. Dormant profile mirrors stay owned for the same reason in the other
+/// direction: an unselected profile is not a withdrawn one.
 pub fn owned_targets(intent: &Intent) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = intent.mirror.iter().map(|m| m.live.clone()).collect();
     if !intent.sysctl.is_empty() {
         out.insert(RENDERED_SYSCTL_CONF.to_string());
     }
+    out.extend(intent.dormant.iter().cloned());
     out
 }
 

@@ -40,9 +40,15 @@ There is no lint config; `cargo clippy` is ad hoc.
    host state: `intent` reads its own package tree (and `GENARCH_INTENT`'s rehearsal copy), and
    `import` reads an offline `system-tuning/state` tree; both use `std::fs` directly. A new need
    on live state still goes on the trait.
-2. **`intent` is the declared state** — typed TOML (`sysctl.toml`, `ryzenadj.toml`, `passes.toml`),
-   byte-exact `mirror/` files, and `managed/*.toml` anchored-line records. `/etc/genarch` overrides
-   `/usr/lib/genarch` whole-file; nothing merges.
+2. **`intent` is the declared state, resolved from layers** — typed TOML (`sysctl.toml`,
+   `ryzenadj.toml`, `passes.toml`, `ceil.toml`), byte-exact `mirror/` files, and
+   `managed/*.toml` anchored-line records. Layers, in precedence order: **base**
+   (`/usr/lib/genarch`), **profile** (`{base,overlay}/profiles/<name>`, selected by
+   `/etc/genarch/profile`), **operator** (`/etc/genarch`). Scalar maps merge per key, lists
+   replace wholesale, mirrors and managed records are whole-file with an `[omit]` tombstone in
+   a layer's `intent.toml`. No profile means base only: nothing is guessed, and the rows that
+   need a machine fact report SKIPPED. `tree` owns the walk, the deployable-name rule and the
+   live-path mapping for both the loader and the importer.
 3. **`converge` is plan then apply.** `plan` writes nothing and needs no privilege; `apply`
    performs exactly the plan, after a pre-image for every target, under an exclusive lock, then
    re-plans and fails with exit 1 if anything survived.
@@ -84,7 +90,7 @@ There is no lint config; `cargo clippy` is ad hoc.
 | --- | --- |
 | A dotted key in `sysctl.toml` **must be quoted** (`"kernel.printk" = "3 3 3 3"`); bare `kernel.printk = …` parses as a table and silently changes the name | The loader rejects a nested table with that hint. Found while writing the importer, which now quotes every dotted key. |
 | sysctl comparison is whitespace-normalised (`converge::norm_sysctl`): `/proc/sys` renders tabs, the intent writes spaces | Comparing raw strings made the shell engine re-assert forever and exit 1 on a converged host. `sysctl_multi_value_is_compared_whole` is the guard. |
-| A mirror entry whose name looks like a backup (`*.bak*`, `*~`, `*.orig`, `*.tmp`, `.#*`) makes the **intent fail to load** | It is package data: the failure must be seen before a plan exists, not skipped at deploy time. One home: `converge::is_deployable_name`. |
+| A mirror entry whose name looks like a backup (`*.bak*`, `*~`, `*.orig`, `*.tmp`, `.#*`) makes the **intent fail to load** | It is package data: the failure must be seen before a plan exists, not skipped at deploy time. One home: `tree::is_deployable_name`. |
 | `hw-tune.fish`'s CO writes embed fish command substitution (`(printf …)`); they are derived from the CO knobs and must not be carried as raw argv | The importer skips `--set-coall`/`--set-coper` lines and any token with a shell construct; the round-trip test asserts the raw list stays empty. |
 | Mode is preserved on an existing target and taken from the intent for a new one | An exec-bit regression is invisible until a unit fails with 203/EXEC. |
 | `resume` must never sleep | A sleep hook blocks the `user.slice` thaw; measured 5.1 s per resume in the shell era. |
@@ -95,8 +101,11 @@ There is no lint config; `cargo clippy` is ad hoc.
 | A root write must carry over **ownership**, not just mode | The temp is created 0:0, so `rename` made user files root-owned — measured live: `~/.config/autostart/org.fcitx.Fcitx5.desktop` and `org.kde.kdeconnect.daemon.desktop` were `0:0` after the cutover apply, stripping the user's write access. `RealHost::write` now `fchown`s the temp from the existing metadata before the rename (a **new** target inherits the owner of the directory it lands in), and a root run fails rather than silently leaving root-owned files. |
 | Mode and ownership are set on the **file descriptor**, never the path | A path-based `chmod` after `close` follows a symlink: an unprivileged actor who wins the race in a user-writable directory turns a root `chmod` into `chmod` of an arbitrary file. `fchmod`/`fchown` on the open fd, then `fsync`, then `rename`. |
 | Nothing transient may sit in `/usr/lib/systemd/system-sleep/` | systemd-sleep executes every file there, whatever its name. Writes to that directory stage their temp in the sibling `system-sleep-backups/` (same filesystem, so the rename stays atomic); a crash can no longer leave an executable `.tmp` the next resume would run. `staging_live()` is the one home. |
-| A kernel attribute is written with **one** `write(2)`, never `write_all` | `sysfs` `store()` runs once per syscall and is not a stream: a short write followed by the remainder becomes a second, unrelated value (EINVAL or a malformed setting). `write_kernel` issues one `write` and errors on a short count. |
+| A kernel attribute is written with **one** `write(2)`, never `write_all` | `sysfs` `store()` runs once per syscall and is not a stream: a short write followed by the remainder becomes a second, unrelated value (EINVAL or a malformed setting). `write_in_place` issues one `write` and errors on a short count. |
 | `GENARCH_ROOT` rehearsals truncate kernel-attribute files | A rehearsal root is a normal filesystem; without `O_TRUNC` a shorter value left the old tail behind. Real `/sys` and `/proc` refuse `O_TRUNC`, so the flag is conditional on the root being `/`. |
-| One path, one owner: `mirror`/`prune`/`managed` are pairwise disjoint | Overlap made `apply` write a file and then delete it (permanent drift) or a whole-file write fight a line patch. `Intent::validate` refuses it. Several managed records on one target stay legal — that is how `asusd.ron` is patched at five anchors. |
+| One path, one owner: `mirror` and `managed` are disjoint | Overlap made a whole-file write fight a line patch on the same bytes. `Intent::validate` refuses it. Several managed records on one target stay legal — that is how `asusd.ron` is patched at five anchors. |
+| A **deselected** profile's mirrors stay owned (dormant) and are never pruned | With no profile selected the intent stops shipping `/etc/fstab`, and "no longer shipped" would prune it — deleting a system file because a config line went missing. `Intent::dormant` keeps them in `owned_targets`; only a profile that stops shipping a path hands it back. |
+| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan and re-shows it after the apply. `genarch apply` has no `--force`. |
+| A v2 `intent.toml` is refused, not silently stripped of its `prune` list | Schema 3 removed the declared removal list (the manifest owns pruning). `Meta` denies unknown fields, so an old intent fails loudly instead of applying without its removals. |
 | Scheduled passes take the apply lock | The 2-minute ceil timer and an operator's `apply` both write kernel attributes; without the lock the last writer wins silently. A held lock makes the pass log `pass skipped` and return clean — the timer runs again in two minutes. |
 | A refused write in a pass is a failure (exit 3), never `.is_ok()` | The `pass` code swallowed sysfs/procfs errors, so a pass exited 0 while the governor/wake/USB/sysctl value never moved. `a_refused_pass_write_is_a_failure_not_a_silent_skip` is the guard. |

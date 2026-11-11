@@ -44,13 +44,12 @@ pub enum Verb {
         #[arg(value_enum)]
         pass: PassArg,
     },
-    /// Derive the initial intent from a legacy `state/` tree (migration only).
+    /// Derive a machine profile from a legacy `state/` tree (migration only).
     Import {
         /// The `state/` directory of the shell engine.
         state: PathBuf,
-        /// Where to write the imported intent.
-        #[arg(long)]
-        out: PathBuf,
+        /// The profile directory to write, e.g. `intent/profiles/zenbook-s16`.
+        profile_dir: PathBuf,
     },
 }
 

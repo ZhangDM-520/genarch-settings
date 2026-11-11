@@ -56,7 +56,7 @@ pub fn run(host: &dyn Host, intent: &Intent, pass: Pass) -> Result<Report> {
         Err(e) => return Err(e),
     };
     match pass {
-        Pass::Ceil => apply_ceil(host, &mut report)?,
+        Pass::Ceil => apply_ceil(host, intent, &mut report)?,
         Pass::Resume => {
             apply_smu(host, intent, &mut report)?;
             apply_host_state(host, intent, &mut report)?;
@@ -66,8 +66,10 @@ pub fn run(host: &dyn Host, intent: &Intent, pass: Pass) -> Result<Report> {
             apply_host_state(host, intent, &mut report)?;
             // The convergence pass exists because a platform_profile write (asusd does one
             // per power-source event) makes the EC reset SMU limits and EPP.
-            if intent.passes.settle_secs > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(intent.passes.settle_secs));
+            if let Some(secs) = intent.passes.settle_secs
+                && secs > 0
+            {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
                 apply_smu(host, intent, &mut report)?;
             }
         }
@@ -76,14 +78,20 @@ pub fn run(host: &dyn Host, intent: &Intent, pass: Pass) -> Result<Report> {
 }
 
 /// The ceiling watch: drift-only.
-pub fn apply_ceil(host: &dyn Host, report: &mut Report) -> Result<()> {
+pub fn apply_ceil(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()> {
+    let Some(classes) = &intent.ceil else {
+        report.say("ceil: no ceiling classes declared");
+        return Ok(());
+    };
     let policies = ceil::policies(host);
     if policies.is_empty() {
         report.say("ceil: no cpufreq policies found");
         return Ok(());
     }
     for policy in policies {
-        let want = ceil::want_for_policy(host, &policy)?;
+        let Some(want) = ceil::want_for_policy(host, classes, &policy)? else {
+            continue;
+        };
         let path = format!("{policy}/scaling_max_freq");
         let current = host.read_opt(&path).map(|s| s.trim().to_string());
         if current.as_deref() == Some(want.to_string().as_str()) {
@@ -111,10 +119,15 @@ fn apply_smu(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()
         report.say(format!(
             "smu: {} ryzenadj call(s) applied (CO {}, {} per-core offset(s), limits {}, power-saving {})",
             calls.len(),
-            intent.ryzenadj.co.all,
-            intent.ryzenadj.co.per_core.len(),
-            if intent.ryzenadj.limits.fast.is_some() { "set" } else { "unset" },
-            intent.ryzenadj.limits.power_saving
+            intent
+                .ryzenadj
+                .co
+                .all
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unset".into()),
+            intent.ryzenadj.co.per_core.as_ref().map(|v| v.len()).unwrap_or(0),
+            intent.ryzenadj.limits.fast.is_some(),
+            intent.ryzenadj.limits.power_saving.unwrap_or(false)
         ));
     } else {
         report.say(format!(
@@ -128,22 +141,24 @@ fn apply_smu(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()
 fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()> {
     // cpuidle governor
     let governor_path = "/sys/devices/system/cpu/cpuidle/current_governor";
-    if host.exists(governor_path) {
-        let want = intent.passes.idle_governor.as_str();
-        if host.read_opt(governor_path).map(|s| s.trim().to_string()).as_deref() != Some(want) {
-            // A refused write is a failure the operator must see: a pass that "succeeds"
-            // while the governor never moved is the silent divergence this engine exists
-            // to end.
-            host.write(governor_path, want.as_bytes(), None)?;
-            report.say(format!("cpuidle governor={want}"));
-        }
+    if let Some(want) = intent.passes.idle_governor.as_deref()
+        && host.exists(governor_path)
+        && host.read_opt(governor_path).map(|s| s.trim().to_string()).as_deref() != Some(want)
+    {
+        // A refused write is a failure the operator must see: a pass that "succeeds"
+        // while the governor never moved is the silent divergence this engine exists
+        // to end.
+        host.write(governor_path, want.as_bytes(), None)?;
+        report.say(format!("cpuidle governor={want}"));
     }
 
-    apply_ceil(host, report)?;
+    apply_ceil(host, intent, report)?;
 
     // ACPI wake sources: only disarm the ones the intent names, and only when armed.
-    if let Some(wakeup) = host.read_opt("/proc/acpi/wakeup") {
-        for device in &intent.passes.wake_disarm {
+    if let Some(devices) = &intent.passes.wake_disarm
+        && let Some(wakeup) = host.read_opt("/proc/acpi/wakeup")
+    {
+        for device in devices {
             let armed = wakeup.lines().any(|line| {
                 let mut fields = line.split_whitespace();
                 fields.next() == Some(device.as_str()) && line.contains("*enabled")
@@ -156,7 +171,9 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
     }
 
     // USB autosuspend for the named devices.
-    if let Ok(entries) = host.walk("/sys/bus/usb/devices") {
+    if let Some(allowed) = &intent.passes.usb_autosuspend
+        && let Ok(entries) = host.walk("/sys/bus/usb/devices")
+    {
         for entry in entries {
             if entry.is_dir {
                 continue;
@@ -169,7 +186,7 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
             let id_product = host.read_opt(&format!("/sys/bus/usb/devices/{name}/idProduct"));
             let (Some(vendor), Some(product)) = (id_vendor, id_product) else { continue };
             let id = format!("{}:{}", vendor.trim(), product.trim());
-            if intent.passes.usb_autosuspend.contains(&id) {
+            if allowed.contains(&id) {
                 let control = format!("/sys/bus/usb/devices/{name}/power/control");
                 if host.exists(&control) {
                     host.write(&control, b"auto", None)?;
@@ -180,17 +197,18 @@ fn apply_host_state(host: &dyn Host, intent: &Intent, report: &mut Report) -> Re
     }
 
     // WiFi power save: the radio must sleep between beacons.
-    let iface = intent.passes.wifi_interface.as_str();
-    let argv = vec![
-        "iw".to_string(),
-        "dev".to_string(),
-        iface.to_string(),
-        "set".to_string(),
-        "power_save".to_string(),
-        "on".to_string(),
-    ];
-    if host.run(&argv).map(|o| o.success).unwrap_or(false) {
-        report.say(format!("{iface} power_save=on"));
+    if let Some(iface) = intent.passes.wifi_interface.as_deref() {
+        let argv = vec![
+            "iw".to_string(),
+            "dev".to_string(),
+            iface.to_string(),
+            "set".to_string(),
+            "power_save".to_string(),
+            "on".to_string(),
+        ];
+        if host.run(&argv).map(|o| o.success).unwrap_or(false) {
+            report.say(format!("{iface} power_save=on"));
+        }
     }
 
     reassert_sysctl(host, intent, report)?;

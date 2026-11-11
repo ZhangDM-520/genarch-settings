@@ -64,11 +64,13 @@ pub fn summary_line(verdicts: &[Verdict]) -> String {
 pub fn scope_line() -> String {
     let mut full = Vec::new();
     let mut file_only = Vec::new();
+    let mut intent = Vec::new();
     let mut none = Vec::new();
     for check in check::REGISTRY {
         match check.reach {
             Reach::Full => full.push(check.id),
             Reach::FileOnly => file_only.push(check.id),
+            Reach::Intent => intent.push(check.id),
             Reach::None => none.push(check.id),
         }
     }
@@ -80,9 +82,10 @@ pub fn scope_line() -> String {
         }
     };
     format!(
-        "APPLY-SCOPE full={} file-only={} none={}",
+        "APPLY-SCOPE full={} file-only={} intent={} none={}",
         join(full),
         join(file_only),
+        join(intent),
         join(none)
     )
 }

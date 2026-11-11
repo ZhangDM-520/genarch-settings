@@ -1,0 +1,8 @@
+# The machine this profile describes: ASUS Zenbook S 16 (UM5606WA), Ryzen AI 9 HX 370.
+#
+# `genarch report` compares these facts with /sys/class/dmi/id and reports PROFILE DRIFT
+# (exit 1) when they differ. It does not refuse to load: an operator must be able to see
+# the drift and fix the selection.
+[requires]
+product = "ASUS Zenbook S 16 UM5606WA_UM5606WA"
+sys_vendor = "ASUSTeK COMPUTER INC."

@@ -41,10 +41,12 @@ pub fn argv_plan(config: &RyzenadjConfig) -> Vec<Vec<String>> {
         v
     };
 
-    if config.co.all != 0 {
-        calls.push(prog(&[format!("--set-coall={}", hex32(co_word(config.co.all)))]));
+    if let Some(all) = config.co.all
+        && all != 0
+    {
+        calls.push(prog(&[format!("--set-coall={}", hex32(co_word(all)))]));
     }
-    for (core, offset) in config.co.per_core.iter().enumerate() {
+    for (core, offset) in config.co.per_core.iter().flatten().enumerate() {
         calls.push(prog(&[format!(
             "--set-coper={}",
             hex32(per_core_word(core as u32, *offset))
@@ -76,7 +78,7 @@ pub fn argv_plan(config: &RyzenadjConfig) -> Vec<Vec<String>> {
         calls.push(prog(&times));
     }
 
-    if config.limits.power_saving {
+    if config.limits.power_saving == Some(true) {
         calls.push(prog(&["--power-saving".to_string()]));
     }
 
@@ -143,7 +145,7 @@ mod tests {
         assert!(argv_plan(&config).is_empty());
 
         let config = RyzenadjConfig {
-            co: CoConfig { all: 0, per_core: vec![0] },
+            co: CoConfig { all: Some(0), per_core: Some(vec![0]) },
             ..Default::default()
         };
         assert_eq!(argv_plan(&config), vec![vec!["ryzenadj", "--set-coper=0x00000000"]]);
@@ -152,14 +154,14 @@ mod tests {
     #[test]
     fn ordering_is_global_then_cores_then_limits_then_times_then_flags_then_raw() {
         let config = RyzenadjConfig {
-            co: CoConfig { all: -7, per_core: vec![-24] },
+            co: CoConfig { all: Some(-7), per_core: Some(vec![-24]) },
             limits: LimitsConfig {
                 stapm: Some(31000),
                 fast: Some(31000),
                 slow: Some(31000),
                 stapm_time: Some(128),
                 slow_time: Some(1),
-                power_saving: true,
+                power_saving: Some(true),
             },
             raw: vec![RawArgs { args: vec!["--future=1".into()], why: None }],
         };
