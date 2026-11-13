@@ -758,7 +758,11 @@ fn dormant_mirrors(base: &Path, overlay: &Path, layers: &[Layer]) -> BTreeSet<St
                 continue;
             }
             let mirror = root.join("mirror");
-            for path in tree::walk(&mirror) {
+            // Dormant ownership is a best-effort set: a profile so broken this process cannot
+            // read it is already reported by the `tests/profiles.rs` gate, and refusing to load
+            // the *selected* profile because an unselected one is unreadable would be worse.
+            let Ok(files) = tree::walk(&mirror) else { continue };
+            for path in files {
                 if let Some(live) = tree::live_path(&mirror, &path) {
                     out.insert(live);
                 }
@@ -782,7 +786,7 @@ fn load_mirror(layers: &[Layer]) -> Result<Vec<MirrorTarget>> {
             }
         }
         let dir = layer.root.join("mirror");
-        for path in tree::walk(&dir) {
+        for path in tree::walk(&dir)? {
             let Some(live) = tree::live_path(&dir, &path) else { continue };
             by_live.insert(live.clone(), mirror_target(&path, live)?);
         }

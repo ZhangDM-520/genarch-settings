@@ -16,7 +16,32 @@ const LIVE_ONLY: &[&str] = &["/home/", "/dev/", "/var/lib/", "UUID=", "/sys/", "
 /// Identity of one *unit*, not of a model: a disk's UUID, a partition device, a filesystem's
 /// bare identifier. A profile ships to every host that installs the package, so these belong in
 /// the operator layer even when the profile is `measured`.
-const LIVE_CONTENT: &[&str] = &["UUID=", "/dev/nvme", "/dev/sd", "PARTUUID=", "writeback-device"];
+const LIVE_CONTENT: &[&str] = &["UUID=", "PARTUUID=", "/dev/nvme", "/dev/sd", "writeback-device"];
+
+/// Whether `needle` occurs in `text`, without counting `UUID=` inside `PARTUUID=`.
+///
+/// Only the bare `PARTUUID=` token is suppressed: that is the one real overlap in `/etc/fstab`,
+/// and matching its `UUID=` half would name the wrong token. `ID_FS_UUID=`, `RESUME_UUID=` and
+/// `ID_PARTUUID=` are still hits — they carry a unit's identity just as plainly. `needle` is
+/// never empty (the list is a constant).
+fn carries(text: &str, needle: &str) -> bool {
+    let mut from = 0;
+    while let Some(at) = text[from..].find(needle) {
+        let start = from + at;
+        let before = &text[..start];
+        let bare_part_uuid = needle == "UUID="
+            && before.ends_with("PART")
+            && !before[..before.len() - 4]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !bare_part_uuid {
+            return true;
+        }
+        from = start + needle.len();
+    }
+    false
+}
 
 fn profiles_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("intent/profiles")
@@ -163,9 +188,11 @@ fn audit_at(profiles: &Path, slug: &str) -> Vec<String> {
         }
         // A mirror's file name is its live path, but its *content* can carry the same identity:
         // an `/etc/fstab` full of this unit's UUIDs is as much a leak as a path under `/home/`.
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // Bytes, not a string: a non-UTF-8 vendor blob must not scan as empty.
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
         for needle in LIVE_CONTENT {
-            if text.contains(needle) {
+            if carries(&text, needle) {
                 problems.push(format!(
                     "path: {rel} carries unit identity ({needle}) — move it to the operator layer"
                 ));
@@ -205,6 +232,28 @@ fn audit_at(profiles: &Path, slug: &str) -> Vec<String> {
         }
     }
     problems
+}
+
+#[test]
+fn unit_identity_is_recognised_in_every_spelling_a_config_uses() {
+    // The gate is only worth having if it fails: `blkid`-style keys and a `/dev` path are as
+    // much one unit's identity as a bare `UUID=`, and `PARTUUID=` must not be double-reported.
+    for (text, needle) in [
+        ("UUID=00000000-1111 /", "UUID="),
+        ("ID_FS_UUID=0f3d-2c11", "UUID="),
+        ("RESUME_UUID=abc", "UUID="),
+        ("PARTUUID=deadbeef", "PARTUUID="),
+        ("/dev/sda1", "/dev/sd"),
+        ("writeback-device = /dev/nvme0n1p3", "writeback-device"),
+    ] {
+        assert!(carries(text, needle), "{text:?} should carry {needle:?}");
+    }
+    assert!(!carries("PARTUUID=deadbeef", "UUID="), "PARTUUID= is its own token");
+    // Only the bare token is suppressed: a prefixed key still names a partition's identity.
+    assert!(
+        carries("ID_PARTUUID=deadbeef", "UUID="),
+        "ID_PARTUUID= must still be a hit"
+    );
 }
 
 #[test]

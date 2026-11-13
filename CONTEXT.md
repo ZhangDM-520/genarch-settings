@@ -28,12 +28,10 @@ whole-file with an explicit `omit = [...]` tombstone, which reaches only the lay
 **Profile** — the machine-specific layer: a directory shaped like the base, selected by the
 `profile = "<name>"` line in `/etc/genarch-settings/profile`. It carries every fact about the
 *machine model* that is a measurement or an identity — this silicon's curve offsets, this
-machine's ceilings, this model's device IDs. It does **not** carry one unit's own identity: a
-disk's `fstab`, a user's home paths and any other value unique to the laptop in hand belong in
-the operator layer, because a profile ships as package data and is read by every host that
-installs it. The base carries only what is true of any AMD laptop. **Empty is legal**: with no
-profile selected, absent sections do nothing and the rows that depend on them report `SKIPPED` —
-there are no host defaults in the binary.
+machine's ceilings, this model's device IDs. It does not carry one unit's own identity; what may
+ship in a profile, and where the rest goes, is `docs/PROFILES.md`. The base carries only what is
+true of any AMD laptop. **Empty is legal**: with no profile selected, absent sections do nothing
+and the rows that depend on them report `SKIPPED` — there are no host defaults in the binary.
 
 A profile also states how it came to be: **documented** (every value published and cited) or
 **measured** (observed on the machine). The distinction is load-bearing, not cosmetic — a

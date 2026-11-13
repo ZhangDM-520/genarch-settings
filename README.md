@@ -2,15 +2,15 @@
 
 One Rust binary carries the declared intent, a read-only judge, the converge pass, the ryzenadj
 settings and the systemd units. The intent is layered: a host-agnostic **base**, a machine
-**profile**, and an operator override. This repository is the engine plus this host's profile
-(ASUS Zenbook S 16 UM5606WA, Ryzen AI 9 HX 370); the ledger of *why* every knob has its value
-stays in [`system-tuning`](https://github.com/ZhangDM-520/system-tuning), and `eco` there is the
-rollback artifact.
+**profile**, and an operator override. This repository is the engine plus a profile for this laptop
+model (ASUS Zenbook S 16 UM5606WA, Ryzen AI 9 HX 370); the ledger of *why* every knob has its
+value stays in [`system-tuning`](https://github.com/ZhangDM-520/system-tuning), and `eco` there is
+the rollback artifact. What a profile may ship, and where a value unique to one unit belongs
+instead, is [`docs/PROFILES.md`](docs/PROFILES.md).
 
 A second AMD laptop is a directory under `intent/profiles/` and one line in
-`/etc/genarch-settings/profile` — the base carries no disk UUID, no user path and no silicon measurement.
-A profile declares the machine it is for, and `report` says `PROFILE DRIFT` (exit 1) when it is
-applied to another one.
+`/etc/genarch-settings/profile`. A profile declares the machine it is for, and `report` says
+`PROFILE DRIFT` (exit 1) when it is applied to another one.
 
 ## What it does
 
@@ -61,8 +61,10 @@ On Arch, with the recipe next to the `gsa` recipe set:
 makepkg -f && sudo pacman -U genarch-settings-0.4.0-1-x86_64.pkg.tar.zst
 ```
 
-The package ships this host's profile **and** its selection (`/etc/genarch-settings/profile`, a pacman
-backup file). Without pacman — from this checkout or straight from a tagged tarball:
+The package ships the `zenbook-s16` profile **and** its selection (`/etc/genarch-settings/profile`,
+a pacman backup file). What that profile may and may not contain, and where a unit's own facts
+belong instead, is [`docs/PROFILES.md`](docs/PROFILES.md). Without pacman — from this
+checkout or straight from a tagged tarball:
 
 ```sh
 sudo ./install.sh                    # builds, installs, converges, enables the units
@@ -83,7 +85,7 @@ merely not selected stays owned.
 
 | Profile | Machine | Kind | What it judges |
 |---|---|---|---|
-| `zenbook-s16` | ASUS Zenbook S 16 UM5606WA (Ryzen AI 9 HX 370) | measured | the model: `PROFILE`, `CEIL`, `CO`, `SMU`, `POWER`, `MIRROR` (one device rule). A unit's own disk and home stay in the operator layer |
+| `zenbook-s16` | ASUS Zenbook S 16 UM5606WA (Ryzen AI 9 HX 370) | measured | the model: `PROFILE`, `CEIL`, `CO`, `SMU`, `POWER`, `MIRROR` (one device rule) |
 | `framework-13-amd` | Framework Laptop 13, Ryzen 7040 (7640U / 7840U) | documented | `PROFILE`, `CEIL` (4.9 / 5.1 GHz bands) |
 | `framework-16-amd` | Framework Laptop 16, Ryzen 7040 (7840HS / 7940HS) | documented | `PROFILE`, `CEIL` (5.1 / 5.2 GHz bands) |
 | `elitebook-845-g11` | HP EliteBook 845 14" G11 (8840U/HS, 8640HS, 8440U) | documented | `PROFILE`, `CEIL` (three SKU bands) |

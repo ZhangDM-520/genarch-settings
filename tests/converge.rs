@@ -686,6 +686,114 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
     );
 }
 
+/// Two candidate scripts are ambiguous: choosing one would derive this machine's knobs from
+/// whichever user's home sorted first.
+#[test]
+fn import_refuses_two_hw_tune_scripts_instead_of_picking_one() {
+    let case = Case::new("import-ambiguous");
+    let state = case.dir.join("state");
+    for user in ["alice", "bob"] {
+        let dir = state.join("owned/home").join(user).join(".reserve");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hw-tune.fish"), "set -l coall -7\n").unwrap();
+    }
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("several hw-tune.fish"), "{}", err.message);
+    assert!(
+        !out.exists(),
+        "a refused import must not leave a half-derived profile at {}",
+        out.display()
+    );
+}
+
+/// A `managed` path that exists but cannot be read is a failure, not an empty layer.
+/// Otherwise the import reports `managed=0` and the profile silently loses every patched file.
+///
+/// The unreadable case is set up as a *file* where a directory is expected, so the test does
+/// not self-skip under root the way `chmod 000` would.
+#[test]
+fn import_refuses_an_unreadable_managed_directory() {
+    let case = Case::new("import-unreadable-managed");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(state.join("owned")).unwrap();
+    std::fs::write(state.join("managed"), "not a directory\n").unwrap();
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("managed"), "{}", err.message);
+    assert!(
+        !out.exists(),
+        "a refused import must not leave a half-derived profile at {}",
+        out.display()
+    );
+}
+
+/// A shell tree that is not a directory is a bad argument, not an empty tree.
+#[test]
+fn import_refuses_a_state_tree_that_is_not_one() {
+    let case = Case::new("import-no-owned");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("not a directory"), "{}", err.message);
+}
+
+/// A managed record that will not parse fails *before* the mirror is written, so the refused
+/// run leaves no directory behind. Writing first produced a profile that `load` accepted and
+/// that silently omitted whatever the bad record was about.
+#[test]
+fn import_writes_nothing_when_a_managed_record_is_refused() {
+    let case = Case::new("import-bad-record");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(state.join("owned/etc/tlp.d")).unwrap();
+    std::fs::write(state.join("owned/etc/tlp.d/01-eco.conf"), "X=1\n").unwrap();
+    std::fs::create_dir_all(state.join("managed")).unwrap();
+    std::fs::write(state.join("managed/broken.toml"), "target = [\n").unwrap();
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("broken.toml"), "{}", err.message);
+    assert!(
+        !out.exists(),
+        "a refused import must not leave a half-derived profile at {}",
+        out.display()
+    );
+}
+
+/// An unreadable subtree is a failure, not an empty one: treating it as empty dropped every
+/// sysctl under it and reported a clean import.
+///
+/// A regular file where the directory belongs makes `read_dir` fail with `ENOTDIR` for any uid,
+/// so this cannot pass vacuously as root.
+#[test]
+fn import_refuses_an_unreadable_subtree_instead_of_dropping_it() {
+    let case = Case::new("import-unreadable-subtree");
+    let state = case.dir.join("state");
+    std::fs::create_dir_all(state.join("owned/etc")).unwrap();
+    std::fs::write(state.join("owned/etc/sysctl.d"), "not a directory\n").unwrap();
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("sysctl.d"), "{}", err.message);
+    assert!(!out.exists(), "a refused import must write nothing");
+}
+
+/// A file name that is not UTF-8 has no live path, and a lossy conversion would make two
+/// distinct source files collide on one destination. It is refused before any write.
+#[test]
+fn import_refuses_a_name_that_has_no_live_path() {
+    use std::os::unix::ffi::OsStrExt;
+    let case = Case::new("import-non-utf8");
+    let state = case.dir.join("state");
+    let dir = state.join("owned/etc");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name = std::ffi::OsStr::from_bytes(b"\xff.conf");
+    std::fs::write(dir.join(name), "X=1\n").unwrap();
+    let out = case.dir.join("out");
+    let err = genarch_settings::import::run(&state, &out).unwrap_err();
+    assert!(err.message.contains("UTF-8"), "{}", err.message);
+    assert!(!out.exists(), "a refused import must write nothing");
+}
+
 /// The same property against a real shell tree, when one is pointed at.
 ///
 /// `SYSTEM_TUNING_ROOT` is the one home for that checkout (the contract test reads it too).

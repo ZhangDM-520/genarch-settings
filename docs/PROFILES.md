@@ -118,9 +118,10 @@ selected and refuses:
   declares clocks, not a stranger's core layout — a wrong core map caps the wrong cores on
   another SKU that shares the product string);
 - any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in **any**
-  shipped profile — file names and, for a managed record, its `target`. A measured profile may
-  own the machine's `/etc` files; a user's home is the operator layer's business, because the
-  package is read by every host that installs it;
+  shipped profile — in a file name, in a mirror's *content* (`UUID=`, `PARTUUID=`, a `/dev/sd*`
+  or `/dev/nvme*` device, `writeback-device`), or in a managed record's `target`. A measured
+  profile may own the model's `/etc` files; one unit's disk and one user's home are the operator
+  layer's business, because the package is read by every host that installs it;
 - a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), an empty class map,
   or two bands at the same clock.
 

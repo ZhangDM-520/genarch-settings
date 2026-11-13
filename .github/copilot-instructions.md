@@ -2,14 +2,15 @@
 
 A single Rust binary that converges one Arch host to a declared, layered **intent**. It judges
 live state read-only (`report`), plans then applies (`apply`), and runs three scheduled passes
-(`boot`, `resume`, `ceil`). This repository is the engine plus this host's machine profile
+(`boot`, `resume`, `ceil`). This repository is the engine plus the profile for this laptop model
 (ASUS Zenbook S 16 UM5606WA, Ryzen AI 9 HX 370). The judgement ledger lives in the separate
 `system-tuning` repository.
 
 Domain vocabulary is defined in `CONTEXT.md`; use those words exactly (intent, layer, profile,
 mirror, managed record, plan, drift, verdict, reach, pass, manifest, pre-image). Interface
-reasoning is in `docs/DESIGN.md`; profile provenance rules in `docs/PROFILES.md`; architecture
-rules and hard-won pitfalls in `AGENTS.md`. Do not restate knob values from the ledger in prose.
+reasoning is in `docs/DESIGN.md`; what may ship in a profile, and where the rest goes, in
+`docs/PROFILES.md`; architecture rules and hard-won pitfalls in `AGENTS.md`. Do not restate knob
+values from the ledger in prose.
 
 ## Build, test, lint
 
@@ -97,19 +98,17 @@ read it before changing `src/`. What is specific to working in this repository:
   normalisation, ceiling classes, write policy) lives in exactly one function. When you are about
   to restate a fact in a second file, point at the first instead — that is why the commit
   trailer lives only in `CONTRIBUTING.md`.
-- **Every live mutation goes through `Host`.** If a new module needs live state, add a method to
-  the trait rather than calling `std::fs`/`Command` directly. `intent` (its own package tree) and
-  `import` (an offline `state/` tree) are input data, not host state.
 - **No host identity in anything that ships.** `intent/` is package data read by every host that
-  installs the package, so a profile carries no path under `/home/`, no disk UUID and no device
-  ID, *measured or documented*. A user's own home content goes in the operator layer
-  (`/etc/genarch-settings`), never in the repository. `tests/profiles.rs` enforces this on file
-  names and on a managed record's `target`.
+  installs the package, so a profile carries no path under `/home/`, no disk UUID, no partition
+  device and no other one-unit identity, *measured or documented*. Why, and where that value
+  belongs instead: `docs/PROFILES.md`. `tests/profiles.rs` enforces it on file names, on a
+  mirror's content and on a managed record's `target`.
 - **Nothing in the engine may name a person, a home or a checkout.** `import` finds
-  `hw-tune.fish` by name under `state/owned`, not by a hardcoded `home/<user>`; a test that needs
-  the ledger reads `SYSTEM_TUNING_ROOT`, not an absolute path.
-- `.github/copilot-instructions.md` (this file) carries commands and navigation only; the rules
-  and pitfalls have their homes above.
+  `hw-tune.fish` by name under `state/owned` (and refuses when there are several); a test that
+  needs the ledger reads `SYSTEM_TUNING_ROOT`, not an absolute path.
+- `.github/copilot-instructions.md` (this file) carries commands, the cross-file big picture and
+  navigation. The rules, and the pitfalls that paid for them, live in `AGENTS.md`; if the two ever
+  disagree, `AGENTS.md` wins.
 
 ## Commits and scope
 
