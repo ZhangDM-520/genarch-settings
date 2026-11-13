@@ -65,7 +65,7 @@ sudo pacman -U --noconfirm genarch-0.1.0-1-x86_64.pkg.tar.zst
 sudo genarch report                       # expect: only SMU may be SKIPPED; TIMER must be OK
 sudo genarch apply --dry-run              # expect: PLAN 0
 systemctl is-enabled genarch.service genarch-ceil.timer
-ls /usr/local/sbin/eco-power.sh /home/<user>/.reserve/hw-tune.fish 2>&1   # both gone
+ls /usr/local/sbin/eco-power.sh ~/.reserve/hw-tune.fish 2>&1   # both gone
 systemctl cat genarch.service | grep Exec
 ```
 

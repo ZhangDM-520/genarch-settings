@@ -47,7 +47,7 @@ pub fn run(state: &Path, out: &Path) -> Result<Summary> {
     summary.mirror = import_owned(state, out, &mut summary)?;
     summary.managed = import_managed(state, out)?;
     summary.sysctl = import_sysctl(state, out)?;
-    import_ryzenadj(state, out)?;
+    import_ryzenadj(state, out, &mut summary)?;
     Ok(summary)
 }
 
@@ -191,12 +191,29 @@ fn import_sysctl(state: &Path, out: &Path) -> Result<usize> {
     Ok(values.len())
 }
 
+/// The shell engine's `hw-tune.fish`, wherever the owning user's home is.
+///
+/// The path is `owned/home/<user>/.reserve/hw-tune.fish` in the source tree, and `<user>` is a
+/// host fact: naming it here made `import` work for exactly one operator. The file is found by
+/// name instead, and its absence is reported rather than silently yielding no knobs.
+fn hw_tune_path(state: &Path) -> Option<PathBuf> {
+    tree::walk(&state.join("owned"))
+        .into_iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("hw-tune.fish"))
+}
+
 /// Translate `hw-tune.fish` into declarative knobs.
-fn import_ryzenadj(state: &Path, out: &Path) -> Result<()> {
-    let path = state.join("owned/home/<user>/.reserve/hw-tune.fish");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+fn import_ryzenadj(state: &Path, out: &Path, summary: &mut Summary) -> Result<()> {
+    let Some(path) = hw_tune_path(state) else {
+        summary.notes.push(
+            "no hw-tune.fish under state/owned: ryzenadj.toml was not derived (curve offsets and \
+             limits must be copied from the live intent)"
+                .into(),
+        );
         return Ok(());
     };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| Failure::precondition(format!("read {}: {e}", path.display())))?;
     let mut config = RyzenadjConfig::default();
 
     for line in text.lines() {

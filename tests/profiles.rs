@@ -13,6 +13,11 @@ use genarch_settings::intent::{Intent, ProfileStatus};
 /// pretending to be a document — the exact mistake that made 0.1.x non-portable.
 const LIVE_ONLY: &[&str] = &["/home/", "/dev/", "/var/lib/", "UUID=", "/sys/", "/proc/"];
 
+/// Identity of one *unit*, not of a model: a disk's UUID, a partition device, a filesystem's
+/// bare identifier. A profile ships to every host that installs the package, so these belong in
+/// the operator layer even when the profile is `measured`.
+const LIVE_CONTENT: &[&str] = &["UUID=", "/dev/nvme", "/dev/sd", "PARTUUID=", "writeback-device"];
+
 fn profiles_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("intent/profiles")
 }
@@ -141,15 +146,43 @@ fn audit_at(profiles: &Path, slug: &str) -> Vec<String> {
         }
     }
 
-    // A *measured* profile may own the machine's own paths — that is what measuring means, and
-    // the reference profile legitimately ships this user's autostart entries. A documented one
-    // may not: a stranger's home directory is not a fact a publication carries. This looks at
-    // the profile layer's own files, since the base legitimately ships `/etc` paths.
-    if documented {
-        for (rel, _) in layer_files(profiles, slug) {
-            for needle in LIVE_ONLY {
-                if rel.contains(needle) {
-                    problems.push(format!("path: {rel} names a live-only location ({needle})"));
+    // Every shipped profile is package data — it lands in `/usr/lib/genarch-settings` and is
+    // read by every host that installs this package. A live-only location is therefore a
+    // privacy leak and a portability bug in *any* profile, measured or documented: one
+    // operator's home directory or one unit's disk is not something a package may carry. A
+    // measured profile still owns the model's own files; a path under a user's home belongs in
+    // that user's operator layer (`/etc/genarch-settings`), never here.
+    for (rel, path) in layer_files(profiles, slug) {
+        for needle in LIVE_ONLY {
+            if rel.contains(needle) {
+                problems.push(format!(
+                    "path: {rel} names a live-only location ({needle}) — move it to the \
+                     operator layer"
+                ));
+            }
+        }
+        // A mirror's file name is its live path, but its *content* can carry the same identity:
+        // an `/etc/fstab` full of this unit's UUIDs is as much a leak as a path under `/home/`.
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        for needle in LIVE_CONTENT {
+            if text.contains(needle) {
+                problems.push(format!(
+                    "path: {rel} carries unit identity ({needle}) — move it to the operator layer"
+                ));
+            }
+        }
+        // A managed record names its target inside the file, so a file-name check misses it.
+        if rel.starts_with("managed/") && rel.ends_with(".toml") {
+            let Ok(record) = toml::from_str::<genarch_settings::intent::ManagedRecord>(&text)
+            else {
+                continue;
+            };
+            for needle in LIVE_ONLY.iter().chain(LIVE_CONTENT) {
+                if record.target.contains(needle) {
+                    problems.push(format!(
+                        "path: {rel} targets {} ({needle}) — move it to the operator layer",
+                        record.target
+                    ));
                 }
             }
         }

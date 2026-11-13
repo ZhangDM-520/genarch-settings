@@ -81,6 +81,13 @@ Everything above, plus: `[co]` offsets from an actual sweep, `wake_disarm` from
 and `mirror/`/`managed/` entries for this machine's own files. That is what
 `intent/profiles/zenbook-s16/` is.
 
+A measured profile is still **package data**: it ships in `/usr/lib/genarch-settings` and is read
+by whoever installs the package. So "this machine's own files" means the *model's* files — a
+device rule, a vendor config — never a value unique to one unit or one person. Disk UUIDs, an
+`/etc/fstab` naming them, a partition layout, a path under `/home/`: those are `L` (live-only) for
+a measured profile too, and they belong in the **operator layer** (`/etc/genarch-settings`),
+where the engine reads them as an ordinary layer and they never leave the machine.
+
 ## When a machine cannot be covered
 
 Some vendors do not publish a stable machine identity. Lenovo is the worked example: on a
@@ -110,8 +117,10 @@ selected and refuses:
   offset, a wake list, a USB list, or a `ceil.toml` class that names CPUs (a documented profile
   declares clocks, not a stranger's core layout — a wrong core map caps the wrong cores on
   another SKU that shares the product string);
-- any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in a documented
-  profile;
+- any path under `/home/`, `/dev/`, `/sys/`, `/proc/`, `/var/lib/` or a `UUID=` in **any**
+  shipped profile — file names and, for a managed record, its `target`. A measured profile may
+  own the machine's `/etc` files; a user's home is the operator layer's business, because the
+  package is read by every host that installs it;
 - a ceiling outside 500 MHz–10 GHz (the `470000` / `4700000` unit mistake), an empty class map,
   or two bands at the same clock.
 

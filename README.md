@@ -83,7 +83,7 @@ merely not selected stays owned.
 
 | Profile | Machine | Kind | What it judges |
 |---|---|---|---|
-| `zenbook-s16` | ASUS Zenbook S 16 UM5606WA (Ryzen AI 9 HX 370) | measured | everything — this host |
+| `zenbook-s16` | ASUS Zenbook S 16 UM5606WA (Ryzen AI 9 HX 370) | measured | the model: `PROFILE`, `CEIL`, `CO`, `SMU`, `POWER`, `MIRROR` (one device rule). A unit's own disk and home stay in the operator layer |
 | `framework-13-amd` | Framework Laptop 13, Ryzen 7040 (7640U / 7840U) | documented | `PROFILE`, `CEIL` (4.9 / 5.1 GHz bands) |
 | `framework-16-amd` | Framework Laptop 16, Ryzen 7040 (7840HS / 7940HS) | documented | `PROFILE`, `CEIL` (5.1 / 5.2 GHz bands) |
 | `elitebook-845-g11` | HP EliteBook 845 14" G11 (8840U/HS, 8640HS, 8440U) | documented | `PROFILE`, `CEIL` (three SKU bands) |

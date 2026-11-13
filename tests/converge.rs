@@ -592,33 +592,62 @@ fn probe_reports_the_three_terminal_states() {
     );
 }
 
-/// The migration property: the intent derived from the shell tree must reproduce it exactly.
-/// This is the gate that makes the cutover safe, so it runs against the real tree when it is
-/// present on this machine.
+/// The migration property: the intent derived from a shell tree must reproduce it exactly.
+///
+/// A synthetic tree, so the gate runs on any host: the property is about the importer, not
+/// about one machine's `state/`. It covers a home directory whose user is *not* the test
+/// runner's, which is what the old hardcoded `owned/home/<user>/...` lookup failed to do.
 #[test]
 fn import_round_trip_reproduces_the_shell_state_tree() {
-    let state = Path::new("/home/<user>/Projects/system-tuning/state");
-    if !state.join("owned").is_dir() {
-        eprintln!("skipping: no shell state tree at {}", state.display());
-        return;
-    }
     let case = Case::new("import-roundtrip");
+    let state = case.dir.join("state");
+    let owned = state.join("owned");
+    // Two deployable mirrors, a non-deployable name, and hw-tune under a home that belongs to
+    // someone else: the importer must find it by name, not by user.
+    let home = owned.join("home/alice/.reserve");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("hw-tune.fish"),
+        "set -l coall -7\nset -l per_core_offsets -24 -24 -21 -21 -9 -11 -8 -6\n\
+         ryzenadj --stapm-limit=31000 --fast-limit=31000 --slow-limit=31000 --power-saving\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(owned.join("etc/tlp.d")).unwrap();
+    std::fs::write(owned.join("etc/tlp.d/01-eco.conf"), "TLP_ENABLE=1\n").unwrap();
+    std::fs::create_dir_all(owned.join("etc/sysctl.d")).unwrap();
+    std::fs::write(
+        owned.join("etc/sysctl.d/90-eco.conf"),
+        "vm.swappiness = 150\n\"kernel.printk\" = \"3 3 3 3\"\n",
+    )
+    .unwrap();
+    // A backup name in the tree is skipped, not deployed.
+    std::fs::write(owned.join("etc/tlp.d/01-eco.conf.bak-20260101"), "stale\n").unwrap();
+    std::fs::create_dir_all(state.join("managed")).unwrap();
+    std::fs::write(
+        state.join("managed/example.toml"),
+        "name = \"example\"\ntarget = \"/etc/systemd/journald.conf\"\nmatch = '^#SystemMaxUse='\n\
+         line = \"SystemMaxUse=64M\"\n",
+    )
+    .unwrap();
+
     // The importer emits a machine profile, never a base: put it where a profile lives and
     // select it, which is exactly how the package ships it.
     let base = case.dir.join("base");
     std::fs::create_dir_all(&base).unwrap();
     std::fs::write(base.join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
     let out = base.join("profiles/imported");
-    let summary = genarch_settings::import::run(state, &out).unwrap();
-    assert!(summary.mirror > 40, "expected the whole owned set, got {}", summary.mirror);
+    let summary = genarch_settings::import::run(&state, &out).unwrap();
+    // Three deployable files (the two configs and hw-tune.fish itself); the backup is skipped.
+    assert_eq!(summary.mirror, 3, "the backup name must be skipped: {:?}", summary.skipped);
+    assert_eq!(summary.skipped, vec!["/etc/tlp.d/01-eco.conf.bak-20260101".to_string()]);
+    assert_eq!(summary.managed, 1);
 
-    let owned = state.join("owned");
     let mut checked = 0;
     for entry in walk(&owned) {
         let rel = entry.strip_prefix(&owned).unwrap();
         let live = format!("/{}", rel.display());
-        let base = live.rsplit('/').next().unwrap();
-        if !tree::is_deployable_name(base) {
+        let name = live.rsplit('/').next().unwrap();
+        if !tree::is_deployable_name(name) {
             continue;
         }
         let imported = out.join("mirror").join(rel);
@@ -629,7 +658,7 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
         assert_eq!(want, got, "byte mismatch for {live}");
         checked += 1;
     }
-    assert!(checked > 40, "checked only {checked} files");
+    assert_eq!(checked, 3);
 
     // The intent must load, and loading must see the same bytes.
     let overlay = case.dir.join("overlay");
@@ -638,8 +667,9 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
     let intent = Intent::load(&base, &overlay).unwrap();
     assert_eq!(intent.profile.as_ref().map(|p| p.name.as_str()), Some("imported"));
     assert_eq!(intent.mirror.len(), checked);
-    assert_eq!(intent.managed.len(), 8, "eight managed records in the shell tree");
-    assert!(intent.sysctl.len() >= 8, "sysctl values collapsed from sysctl.d");
+    assert_eq!(intent.managed.len(), 1);
+    assert_eq!(intent.sysctl.len(), 2, "sysctl values collapsed from sysctl.d");
+    // hw-tune was derived from a home that is not the runner's.
     assert_eq!(intent.ryzenadj.co.all, Some(-7));
     assert_eq!(
         intent.ryzenadj.co.per_core,
@@ -653,6 +683,54 @@ fn import_round_trip_reproduces_the_shell_state_tree() {
         intent.ryzenadj.raw.is_empty(),
         "unexpected raw args carried from hw-tune.fish: {:?}",
         intent.ryzenadj.raw
+    );
+}
+
+/// The same property against a real shell tree, when one is pointed at.
+///
+/// `SYSTEM_TUNING_ROOT` is the one home for that checkout (the contract test reads it too).
+/// The assertion is structural — the importer neither drops nor invents a file — because a
+/// real tree's knob values are that machine's, not this repository's.
+#[test]
+fn import_round_trip_holds_for_a_real_shell_tree() {
+    let Some(root) = std::env::var_os("SYSTEM_TUNING_ROOT").map(PathBuf::from) else {
+        eprintln!("skipping: SYSTEM_TUNING_ROOT is unset");
+        return;
+    };
+    let state = root.join("state");
+    if !state.join("owned").is_dir() {
+        eprintln!("skipping: no shell state tree at {}", state.display());
+        return;
+    }
+    let case = Case::new("import-roundtrip-real");
+    let base = case.dir.join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("intent.toml"), format!("schema = {SCHEMA_VERSION}\n")).unwrap();
+    let out = base.join("profiles/imported");
+    genarch_settings::import::run(&state, &out).unwrap();
+
+    let owned = state.join("owned");
+    for entry in walk(&owned) {
+        let rel = entry.strip_prefix(&owned).unwrap();
+        let live = format!("/{}", rel.display());
+        let name = live.rsplit('/').next().unwrap();
+        if !tree::is_deployable_name(name) {
+            continue;
+        }
+        let want = std::fs::read(&entry).unwrap();
+        let got = std::fs::read(out.join("mirror").join(rel))
+            .unwrap_or_else(|e| panic!("import lost {}: {e}", entry.display()));
+        assert_eq!(want, got, "byte mismatch for {live}");
+    }
+
+    let overlay = case.dir.join("overlay");
+    std::fs::create_dir_all(&overlay).unwrap();
+    std::fs::write(overlay.join("profile"), "profile = \"imported\"\n").unwrap();
+    let intent = Intent::load(&base, &overlay).unwrap();
+    assert_eq!(intent.profile.as_ref().map(|p| p.name.as_str()), Some("imported"));
+    assert!(
+        intent.ryzenadj.co.all.is_some(),
+        "hw-tune.fish exists in the tree but no curve offset was derived"
     );
 }
 

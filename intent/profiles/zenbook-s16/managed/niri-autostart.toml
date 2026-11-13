@@ -1,5 +1,0 @@
-name = "niri-autostart"
-target = "/home/<user>/.config/niri/cfg/autostart.kdl"
-match = '.*hw-tune\.fish.*'
-line = '	spawn-at-startup "fish" ".reserve/hw-tune.fish"'
-doc = "rollback#misc"

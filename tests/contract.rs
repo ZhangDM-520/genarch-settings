@@ -11,12 +11,14 @@ use genarch_settings::host::FixtureHost;
 use genarch_settings::intent::{Intent, SCHEMA_VERSION};
 use genarch_settings::report;
 
-/// The ledger repo. `SYSTEM_TUNING_ROOT` exists for a checkout somewhere else; the default is
-/// the canonical path.
+/// The ledger repo. `SYSTEM_TUNING_ROOT` exists for a checkout somewhere else; without it the
+/// ledger is a sibling checkout of the same owner, found through `$HOME` rather than a path
+/// that names one user.
 fn ledger_root() -> std::path::PathBuf {
-    std::env::var_os("SYSTEM_TUNING_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/home/<user>/Projects/system-tuning"))
+    std::env::var_os("SYSTEM_TUNING_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        home.join("Projects/system-tuning")
+    })
 }
 
 fn contract_rows(text: &str) -> Vec<(String, String)> {
