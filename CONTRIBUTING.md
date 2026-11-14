@@ -36,14 +36,17 @@ genarch-settings apply --dry-run   # PLAN 0 on a converged host
 
 ## Commits
 
-Name the check ID or the knob when a change touches one, and add the trailer. This block is the
-trailer's **one home**; `AGENTS.md` and `.github/copilot-instructions.md` point here rather than
-restating it, so rotating the identity is a one-line change.
+Name the check ID or the knob when a change touches one, and end the message with this trailer
+pair. This block is the trailers' **one home**; `AGENTS.md` and
+`.github/copilot-instructions.md` point here rather than restating it, so rotating the identity
+is a one-line change.
 
 ```
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+Assisted-by: LLM (human-reviewed)
+Signed-off-by: ZhangDM-520 <jixianqiang1540@gmail.com>
 ```
 
+These two lines are the whole set; do not add a `Co-authored-by` trailer.
 
 ## Licence
 

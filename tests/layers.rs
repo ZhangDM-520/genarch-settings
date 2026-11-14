@@ -480,3 +480,19 @@ fn the_shipped_intent_loads_as_base_plus_the_selected_profile() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_mirror_at_the_sysctl_projection_path_is_refused() {
+    // The engine writes this file from sysctl.toml. A mirror on the same path deployed
+    // different bytes, so every apply re-planned non-empty and exited 1 forever.
+    let tree = Tree::new("projection-mirror")
+        .write("mirror/etc/sysctl.d/90-genarch-settings.conf", "operator\n")
+        .write_profile("p1", "intent.toml", "[requires]\n")
+        .select("p1");
+    let err = tree.load().unwrap_err();
+    assert!(
+        err.message.contains("90-genarch-settings.conf"),
+        "{}",
+        err.message
+    );
+}

@@ -190,10 +190,11 @@ if [[ -f $PREFIX/lib/genarch/package.toml ]]; then
 fi
 
 say "installing documentation to $DOC_DIR"
-for doc in AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
+for doc in README.md AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
   run install -Dm644 "$SOURCE/$doc" "$DOC_DIR/$doc"
 done
 run install -Dm644 "$SOURCE/docs/DESIGN.md" "$DOC_DIR/DESIGN.md"
+run install -Dm644 "$SOURCE/docs/PROFILES.md" "$DOC_DIR/PROFILES.md"
 run install -Dm755 -- "$0" "$DOC_DIR/install.sh"
 
 # The selection is operator state: written only when asked, and never silently replaced.

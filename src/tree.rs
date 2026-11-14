@@ -13,6 +13,13 @@ use std::path::{Path, PathBuf};
 
 use crate::exit::{Failure, Result};
 
+/// The engine-written sysctl projection.
+///
+/// One home: `intent::validate` refuses a mirror on this path, `converge` writes it from
+/// `sysctl.toml`, and the ownership record lists it. A second owner of these bytes would be
+/// a second home for every value.
+pub const RENDERED_SYSCTL_CONF: &str = "/etc/sysctl.d/90-genarch-settings.conf";
+
 /// Every regular file under `dir`, recursively, sorted.
 ///
 /// A missing directory is empty, not an error: a layer that ships no mirrors is legal. A

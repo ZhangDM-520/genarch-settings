@@ -30,8 +30,10 @@ restate a knob value in prose.
 | `sudo ./target/debug/genarch-settings converge <boot\|resume\|ceil>` | the scheduled passes |
 
 Rehearsal without touching the machine: `GENARCH_SETTINGS_ROOT=/path/to/copy` aims every live path at a
-copy of the tree; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Both are read-only unless
-you run `apply` without `--dry-run`.
+copy of the tree; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Neither is a
+sandbox for *processes*: a rooted host refuses to execute external tools (`Host::run` returns a
+failed reply), so a rehearsal never writes the SMU and never reloads systemd or udev. Both are
+read-only unless you run `apply` without `--dry-run`.
 
 There is no lint config; `cargo clippy` is ad hoc.
 
@@ -76,7 +78,9 @@ There is no lint config; `cargo clippy` is ad hoc.
   (deployable names, sysctl normalisation, ceiling classes) lives in exactly one function.
 - **Pre-images before every write**, dated, never deleted, **byte-exact and mode-preserving**:
   the copy is `read_bytes` + the source's permission bits. A 0644 copy of a 0755 hook restores a
-  non-executable hook (203/EXEC, or silently skipped in `system-sleep/`).
+  non-executable hook (203/EXEC, or silently skipped in `system-sleep/`). One per target per
+  **day**: a second write the same day reuses `<file>.bak-YYYYMMDD` rather than overwriting the
+  state from before the first write.
 - **Kernel attributes are written in place.** `sysfs` and `procfs` cannot host a sibling temp file
   or a rename, so `/sys` and `/proc` writes bypass the atomic path; everything else is
   temp + fsync + rename with `O_EXCL|O_NOFOLLOW` on the temp name.
@@ -86,8 +90,8 @@ There is no lint config; `cargo clippy` is ad hoc.
   second home. Nothing is deleted on a hunch.
 - **Every live mutation says which pass it belongs to.** SMU writes are boot/resume only; the
   ceiling watch is drift-only.
-- Commit messages carry the check ID or knob when they change one. The trailer is in
-  `CONTRIBUTING.md` — that file is its one home.
+- Commit messages carry the check ID or knob when they change one. The trailers are in
+  `CONTRIBUTING.md` — that file is their one home.
 
 ## Facts that are easy to get wrong
 
@@ -112,7 +116,9 @@ There is no lint config; `cargo clippy` is ad hoc.
 | A **documented** profile carries no `mirror/`, no `[co]`, no wake/USB list, and must cite a source | A value a publication cannot state is a measurement; shipping it in a documented profile is how a "portable" profile silently becomes one laptop's. `tests/profiles.rs` refuses it, and `status = "documented"` without `source` fails at load. `docs/PROFILES.md` is the contract. |
 | A ceiling class may omit `cpus` (a **band** class) | A machine this repository has not booted has no known CPU numbering. The band applies by `cpuinfo_max_freq` (`fallback_from_cpuinfo`): the highest declared clock the unit admits. Several bands are normal — one DMI product string often covers SKUs at different clocks — but two bands at the same clock are refused as ambiguous, and a machine admitting *less* than every band is reported, not capped. |
 | A **deselected** profile's mirrors stay owned (dormant) and are never pruned | With no profile selected the intent stops shipping the profile's mirrors, and "no longer shipped" would prune them — deleting a system file because a config line went missing. `Intent::dormant` keeps them in `owned_targets`; only a profile that stops shipping a path hands it back. |
-| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan, `converge::apply_exit` makes the finished apply exit 1, and `main` prints `SUMMARY … exit=1`. `genarch-settings apply` has no `--force`. |
+| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan, `converge::apply_exit` makes the finished apply exit 1, and `main` prints `SUMMARY … exit=1`. `genarch-settings apply` has no `--force`. **Caveat**: the mismatch only reaches exit 1 when every record can be classified. On a machine without the profile's own targets (an ASUS profile on a non-ASUS box has no `asusd.ron`), `plan.anomalies` refuses the whole apply first — exit 3, "nothing was written". |
+| A rehearsal root does not execute external tools | `GENARCH_SETTINGS_ROOT` redirects paths, not processes: `RealHost::run` returns a failed reply instead of running `ryzenadj`, `systemctl` or `udevadm`. Without that, a rehearsal boot wrote the real machine's SMU. Rows that depend on a command report SKIPPED. |
+| An unclassifiable intent is exit 3, not exit 2 | `managed_zero_match_refuses_and_writes_nothing` pins `Exit::Partial`; the message says "nothing was written", but the operator contract does not move while units branch on it. The digest in `docs/reviews/` records the case for `Precondition`. |
 | An `[omit]` tombstone reaches only the layers **below** the one declaring it | The operator has the last word; a base tombstone that removed an operator file would invert the precedence. A tombstone that names nothing below it is a load error, so a stale one cannot be silently ignored. |
 | The unit list has exactly one home (`[units] enabled`) | `genarch-settings units` prints it and both install scripts enable that list; a renamed unit used to need edits in `genarch-settings.install`, `install.sh` and the intent. |
 | `Some(0)` and `None` are different CO declarations | `None` leaves the firmware's offset alone; `Some(0)` writes zero, which clears it. `argv_plan` sends `--set-coall=0x00000000` for the latter — the old `all != 0` test could not tell them apart. |

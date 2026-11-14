@@ -41,7 +41,13 @@ post_install() {
   # Deploy the intent's mirrors and units, then enable what the package wires up. The units
   # themselves ship as intent (one home), so they only exist after an apply. The apply also
   # prunes the legacy names, because the migrated manifest still lists them as owned.
-  /usr/bin/genarch-settings apply || true
+  # A failure here must be loud: swallowing it made `pacman -U` exit 0 while the engine had
+  # written nothing (an absent managed target refuses the whole plan). The install stays
+  # non-fatal — a boot chain must not break — but the operator is told to look.
+  if ! /usr/bin/genarch-settings apply; then
+    echo "genarch-settings: apply did not converge this host (see the message above)" >&2
+    echo "genarch-settings: the package is installed; run 'genarch-settings report' to see why" >&2
+  fi
   systemctl daemon-reload
   udevadm control --reload || true
   enabled=$(units)
@@ -59,4 +65,8 @@ pre_remove() {
   if [ -n "$enabled" ]; then
     systemctl disable $enabled 2>/dev/null || true
   fi
+  # Nothing puts the deployed files back: say what stays, so a removal is not mistaken for a
+  # rollback. The manifest is the list; the README's Removal section is the procedure.
+  echo "genarch-settings: deployed files listed in /var/lib/genarch-settings/manifest.toml were left in place" >&2
+  echo "genarch-settings: pre-images (*.bak-YYYYMMDD) sit beside every file the engine replaced" >&2
 }

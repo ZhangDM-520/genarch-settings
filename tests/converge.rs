@@ -955,3 +955,106 @@ fn a_pass_stands_down_while_an_apply_holds_the_lock() {
         report.lines
     );
 }
+
+#[test]
+fn harvest_proposes_the_live_value_for_sysctl_and_managed() {
+    // `harvest` is documented as "the intent change that would match live". It used to render
+    // mirrors and managed records only, so a drifted sysctl (and a ceiling) produced no output
+    // at all — indistinguishable from a converged host. The `+` line is what the intent should
+    // say, which for a managed record is the live line, not the declared one.
+    let case = Case::new("harvest");
+    case.write_intent_meta();
+    std::fs::write(
+        case.intent().join("sysctl.toml"),
+        "[values]\n\"vm.swappiness\" = \"150\"\n",
+    )
+    .unwrap();
+    case.write_live("/proc/sys/vm/swappiness", "60\n");
+    case.write_managed(
+        "rec",
+        "name = \"rec\"\ntarget = \"/etc/foreign.conf\"\nmatch = \"^Key=\"\nline = \"Key=intent\"\n",
+    );
+    case.write_live("/etc/foreign.conf", "Key=live\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let out = converge::harvest(&intent, &host).unwrap();
+    assert!(out.contains("+ 60"), "sysctl proposal missing: {out}");
+    assert!(out.contains("- Key=intent"), "intent line missing: {out}");
+    assert!(out.contains("+ Key=live"), "live line missing: {out}");
+}
+
+#[test]
+fn a_fresh_install_does_not_own_a_dormant_profiles_mirrors() {
+    // `owned_targets` used to extend every dormant profile's mirrors, so a fresh install
+    // claimed files it never wrote and deleting that profile pruned a foreign file.
+    let tree_dir = std::env::temp_dir().join(format!(
+        "genarch-settings-dormant-owned-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tree_dir);
+    for (rel, body) in [
+        ("base/intent.toml", format!("schema = {SCHEMA_VERSION}\n")),
+        ("base/profiles/selected/intent.toml", "[requires]\n".into()),
+        ("base/profiles/dormant/mirror/etc/dormant.conf", "dormant\n".into()),
+        ("etc/profile", "profile = \"selected\"\n".into()),
+    ] {
+        let path = tree_dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let intent = Intent::load(&tree_dir.join("base"), &tree_dir.join("etc")).unwrap();
+    assert!(intent.dormant.contains("/etc/dormant.conf"), "{:?}", intent.dormant);
+
+    let host = FixtureHost::new(tree_dir.join("live"));
+    converge::apply(&intent, &host, false).unwrap();
+    let manifest = converge::Manifest::load(&host).unwrap();
+    assert!(
+        !manifest.owned.contains("/etc/dormant.conf"),
+        "a never-written path was claimed: {manifest:?}"
+    );
+    let _ = std::fs::remove_dir_all(&tree_dir);
+}
+
+#[test]
+fn a_pass_where_every_smu_call_failed_is_a_failure() {
+    // One unsupported flag must not abort the remaining knobs, but a pass that wrote nothing
+    // must not exit 0 while the journal says every call failed.
+    let case = Case::new("smu-all-failed");
+    case.write_intent_meta();
+    std::fs::write(
+        case.intent().join("ryzenadj.toml"),
+        "[co]\nall = -3\n",
+    )
+    .unwrap();
+    let intent = case.load();
+    let host = case.host().with_process("ryzenadj", "", 1);
+    let err = genarch_settings::pass::run(&host, &intent, genarch_settings::pass::Pass::Resume)
+        .unwrap_err();
+    assert!(
+        err.message.contains("all") && err.message.contains("failed"),
+        "{}",
+        err.message
+    );
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Partial, "{}", err.message);
+}
+
+#[test]
+fn a_rehearsal_root_does_not_execute_live_tools() {
+    // GENARCH_SETTINGS_ROOT redirects paths; a child process would still act on the real
+    // machine (a boot rehearsal would write this laptop's SMU).
+    let dir = std::env::temp_dir().join(format!(
+        "genarch-settings-rehearsal-run-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("marker");
+    let host = genarch_settings::host::RealHost::rooted(&dir);
+    let out = host
+        .run(&["touch".into(), marker.display().to_string()])
+        .unwrap();
+    assert!(!out.success, "{out:?}");
+    assert!(!marker.exists(), "a rehearsal executed a live tool");
+    let _ = std::fs::remove_dir_all(&dir);
+}

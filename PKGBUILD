@@ -55,9 +55,12 @@ package() {
     target/release/genarch-settings completions "$shell" > "$dest"
   done
 
-  for doc in AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
+  for doc in README.md AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
     install -Dm644 "$doc" "$pkgdir/usr/share/doc/genarch-settings/$doc"
   done
   install -Dm644 docs/DESIGN.md "$pkgdir/usr/share/doc/genarch-settings/DESIGN.md"
+  # The two pages the installed documents point at. Without them every "see docs/…" line is
+  # dead on the machine that only has the package.
+  install -Dm644 docs/PROFILES.md "$pkgdir/usr/share/doc/genarch-settings/PROFILES.md"
   install -Dm755 install.sh "$pkgdir/usr/share/doc/genarch-settings/install.sh"
 }

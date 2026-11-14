@@ -134,6 +134,14 @@ fn apply_smu(host: &dyn Host, intent: &Intent, report: &mut Report) -> Result<()
             "smu: {failed} of {} ryzenadj call(s) failed — firmware limits may still stand",
             calls.len()
         ));
+        // One unsupported flag must not abort the remaining knobs, but a pass where *nothing*
+        // was written must not exit 0: that is the silent divergence this engine exists to end.
+        if failed == calls.len() {
+            return Err(crate::exit::Failure::partial(format!(
+                "smu: all {} ryzenadj call(s) failed — no SMU setting was applied",
+                calls.len()
+            )));
+        }
     }
     Ok(())
 }

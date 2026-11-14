@@ -454,6 +454,14 @@ impl Intent {
                 "{path} is declared as both mirror and managed: one path, one owner"
             )));
         }
+        // The sysctl projection is engine-written from `sysctl.toml`; a mirror on the same
+        // path would deploy different bytes and make every apply re-plan non-empty forever.
+        if mirror.contains(tree::RENDERED_SYSCTL_CONF) {
+            return Err(Failure::precondition(format!(
+                "{} is written by the engine from sysctl.toml: a mirror cannot also own it",
+                tree::RENDERED_SYSCTL_CONF
+            )));
+        }
         for target in &self.mirror {
             if !target.live.starts_with('/') {
                 return Err(Failure::precondition(format!(

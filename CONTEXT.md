@@ -66,7 +66,9 @@ on disk (**prune**). It is the only source of a removal: there is no declared pr
 belonging to a profile that is merely not selected stays owned (**dormant**), so a lost selection
 cannot delete a system file.
 
-**Pre-image** — the dated `.bak-YYYYMMDD` copy taken before a write. Never deleted.
+**Pre-image** — the dated `.bak-YYYYMMDD` copy taken before a write. Never deleted, and one per
+target per day: a second write the same day reuses it, so the copy always holds the state from
+before the day's first change.
 
 ## Load-bearing rules
 

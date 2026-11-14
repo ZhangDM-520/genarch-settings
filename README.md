@@ -33,7 +33,19 @@ and owner, and refuses on any target it cannot classify.
 The report is eleven rows. `--json` is schema 2: a top-level `profile` object (`null` when none
 is selected), then `checks` and `summary`. The `APPLY-SCOPE` line says which rows `apply` can
 reach (`full`, `file-only`), which are judged against the intent alone (`intent`), and which it
-cannot touch (`none`).
+cannot touch (`none`). The last column of each row is a `findings#…` anchor into the judgement
+ledger ([`system-tuning`](https://github.com/ZhangDM-520/system-tuning)), which records *why* a
+value is what it is; the ledger is not shipped with the package, so the anchor names a section,
+not a file on this host.
+
+A profile whose `[requires]` do not match the machine is `PROFILE` drift. The plan is still
+computed and printed, but if a record it carries cannot be classified — an absent managed
+target, such as `asusd.ron` on a machine without the ASUS tooling — the whole apply is refused
+with "nothing was written" and exit 3. The drift to fix is the selection.
+
+`GENARCH_SETTINGS_ROOT=/path/to/copy` aims every live path at a copy for a rehearsal. It does
+not execute external tools: a rehearsal never writes this machine's SMU and never reloads its
+systemd or udev.
 
 ## Shell completions
 
@@ -61,6 +73,10 @@ On Arch, with the recipe next to the `gsa` recipe set:
 makepkg -f && sudo pacman -U genarch-settings-0.4.0-1-x86_64.pkg.tar.zst
 ```
 
+The package depends on `ryzenadj`, which Arch packages in the **AUR**, not the official
+repositories: install it first (`yay -S ryzenadj` or equivalent) or `pacman -U` will refuse the
+transaction with an unsatisfied dependency. `install.sh` checks for it and says so.
+
 The package ships the `zenbook-s16` profile **and** its selection (`/etc/genarch-settings/profile`,
 a pacman backup file). What that profile may and may not contain, and where a unit's own facts
 belong instead, is [`docs/PROFILES.md`](docs/PROFILES.md). Without pacman — from this
@@ -78,8 +94,17 @@ fresh host runs the base intent and reports `PROFILE SKIPPED` until an operator 
 
 The engine reads its intent from `/usr/lib/genarch-settings` (base + `profiles/<name>`), the operator
 layer from `/etc/genarch-settings`, and records what it owns in `/var/lib/genarch-settings/manifest.toml`. Nothing
-is pruned unless the manifest says the engine wrote it, and a path belonging to a profile that is
-merely not selected stays owned.
+is pruned unless the manifest says the engine wrote it, and a path a deselected profile had
+already written stays owned.
+
+## Removal
+
+`pacman -R genarch-settings` disables the units and removes the binary, the intent and the
+documents. It does **not** remove what the engine deployed: every file listed in
+`/var/lib/genarch-settings/manifest.toml` stays on disk, with a `<file>.bak-YYYYMMDD` pre-image
+beside anything it replaced, and a managed record leaves the line it patched in place. Read the
+manifest before removing; if the removal is permanent, delete those paths yourself. A reinstall
+adopts the same manifest.
 
 ## Coverage
 
@@ -113,6 +138,10 @@ judged (there is no CI — the gate is a local command).
 
 - `AGENTS.md` — architecture rules and the pitfalls that paid for them
 - `CONTEXT.md` — domain vocabulary (knob, intent, layer, profile, verdict, drift, apply, harvest)
+- `docs/PROFILES.md` — what a profile may ship, provenance classes, and how to add a machine
 - `docs/DESIGN.md` — why the seam is where it is, and what is deliberately open
 - `docs/CUTOVER.md` — the runbook that moved this host off the shell engine, including rollback
 - `SCOPE.md` / `CONTRIBUTING.md` — what belongs here, and the gate a change must pass
+
+The package and `install.sh` install these flat under `/usr/share/doc/genarch-settings/`, where
+`docs/PROFILES.md` becomes `PROFILES.md`.

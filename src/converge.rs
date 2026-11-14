@@ -22,6 +22,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ceil;
 use crate::exit::{Failure, Result};
 use crate::host::Host;
 use crate::intent::{Intent, ManagedRecord};
@@ -93,8 +94,9 @@ pub fn norm_sysctl(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The one file the sysctl table is projected into.
-pub const RENDERED_SYSCTL_CONF: &str = "/etc/sysctl.d/90-genarch-settings.conf";
+/// The one file the sysctl table is projected into. Defined in [`crate::tree`] because
+/// `intent::validate` must refuse a mirror on it without importing this module.
+pub use crate::tree::RENDERED_SYSCTL_CONF;
 
 /// Render the sysctl table as a `sysctl.d` file.
 ///
@@ -169,13 +171,13 @@ pub fn plan(intent: &Intent, host: &dyn Host) -> Result<Plan> {
     // record, so a target that leaves the intent cannot be forgotten on disk. This belongs to
     // `plan`, not to `apply`: the PRUNE verdict and the apply must act on one derivation.
     let manifest = Manifest::load(host)?;
-    let owned = owned_targets(intent);
+    let shipped = shipped_targets(intent);
     for live in manifest.owned.iter() {
         let already = plan
             .changes
             .iter()
             .any(|c| matches!(c, Planned::Prune { live: l } if l == live));
-        if !owned.contains(live.as_str()) && !already && host.exists(live) {
+        if !shipped.contains(live.as_str()) && !already && host.exists(live) {
             plan.changes.push(Planned::Prune { live: live.clone() });
         }
     }
@@ -243,6 +245,9 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
             msg.push_str(&format!("  {a}\n"));
         }
         msg.push_str("nothing was written");
+        // Deliberately Partial, not Precondition: `managed_zero_match_refuses_and_writes_nothing`
+        // pins exit 3 for an unclassifiable intent, and the operator contract must not move
+        // while units branch on it. The digest records the argument for 2.
         return Err(Failure::partial(msg));
     }
 
@@ -289,22 +294,35 @@ pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, O
             .push(format!("sysctl {}={}", drift.key, drift.want));
     }
 
-    // Reloads: only for the subsystems a write actually touched.
-    let needs_daemon_reload = plan.changes.iter().any(|c| {
-        let live = c.live();
-        live.contains("/systemd/") || live.ends_with(".service") || live.ends_with(".timer")
-    });
+    // Reloads: only for the subsystems a write actually touched, and only on the live root.
+    // A rehearsal root must not poke the machine's systemd or udev.
+    let live_root = host.root() == std::path::Path::new("/");
+    let needs_daemon_reload = live_root
+        && plan.changes.iter().any(|c| {
+            let live = c.live();
+            live.contains("/systemd/") || live.ends_with(".service") || live.ends_with(".timer")
+        });
     if needs_daemon_reload {
         host.run(&["systemctl".into(), "daemon-reload".into()])?;
         outcome.reloads.push("systemctl daemon-reload".into());
     }
-    let needs_udev_reload = plan.changes.iter().any(|c| c.live().contains("/udev/rules.d/"));
+    let needs_udev_reload =
+        live_root && plan.changes.iter().any(|c| c.live().contains("/udev/rules.d/"));
     if needs_udev_reload {
         host.run(&["udevadm".into(), "control".into(), "--reload".into()])?;
         outcome.reloads.push("udevadm control --reload".into());
     }
 
-    Manifest::save(host, &owned_targets(intent), &touched_targets(intent))?;
+    // Own what this apply wrote, plus anything already owned that the intent still ships: a
+    // deselected profile keeps its files, but a path this engine never wrote is never claimed.
+    let mut owned = owned_targets(intent);
+    let shipped = shipped_targets(intent);
+    for path in Manifest::load(host)?.owned {
+        if shipped.contains(&path) {
+            owned.insert(path);
+        }
+    }
+    Manifest::save(host, &owned, &touched_targets(intent))?;
 
     // A converged host re-plans empty. Anything left is drift that survived apply, which is
     // exit 1 — never silence.
@@ -352,19 +370,30 @@ pub fn pre_image(host: &dyn Host, live: &str) -> Result<Option<PathBuf>> {
     Ok(Some(PathBuf::from(backup)))
 }
 
-/// Live paths this engine owns: mirror targets, the sysctl projection, and the mirrors of
-/// profiles it did not select.
+/// Live paths this intent still ships: mirror targets, the sysctl projection, and the mirrors
+/// of profiles that are installed but not selected.
 ///
-/// Only these are prune-eligible. A file the engine merely *patched* (a managed record) stays
-/// owned by its package, so deleting it because the record left the intent would delete the
-/// package's config. Dormant profile mirrors stay owned for the same reason in the other
-/// direction: an unselected profile is not a withdrawn one.
-pub fn owned_targets(intent: &Intent) -> BTreeSet<String> {
+/// This is what the plan uses to decide a manifest entry is not stale. It is **not** what the
+/// manifest records as owned: a dormant profile's mirror was never written by this engine, so
+/// claiming it would let a later removal delete a file this engine never wrote.
+pub fn shipped_targets(intent: &Intent) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = intent.mirror.iter().map(|m| m.live.clone()).collect();
     if !intent.sysctl.is_empty() {
         out.insert(RENDERED_SYSCTL_CONF.to_string());
     }
     out.extend(intent.dormant.iter().cloned());
+    out
+}
+
+/// Live paths this apply writes: the active mirrors and the sysctl projection.
+///
+/// The manifest records these, plus any path it already owned that the intent still ships
+/// (a deselected profile keeps its files). A path this set never named is not prunable.
+pub fn owned_targets(intent: &Intent) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = intent.mirror.iter().map(|m| m.live.clone()).collect();
+    if !intent.sysctl.is_empty() {
+        out.insert(RENDERED_SYSCTL_CONF.to_string());
+    }
     out
 }
 
@@ -439,9 +468,45 @@ pub fn harvest(intent: &Intent, host: &dyn Host) -> Result<String> {
         for record in records {
             let probe = managed::probe(host, record)?;
             if let ManagedState::Differs { current } = probe.state {
+                // The proposal replaces the intent line with the live one, matching the
+                // mirror convention above: `+` is what the intent should say.
                 out.push_str(&format!(
-                    "--- managed {} in {}\n- {current}\n+ {}\n",
+                    "--- managed {} in {}\n- {}\n+ {current}\n",
                     record.name, target, record.line
+                ));
+            }
+        }
+    }
+    // Sysctls are intent values too, and the plan is the one derivation of "differs".
+    for drift in sysctl_drift(intent, host) {
+        match drift.current {
+            Some(current) => out.push_str(&format!(
+                "--- sysctl {} (live {current})\n- {}\n+ {current}\n",
+                drift.key, drift.want
+            )),
+            None => out.push_str(&format!(
+                "--- sysctl {} (live unreadable; intent {})\n",
+                drift.key, drift.want
+            )),
+        }
+    }
+    // A ceiling the kernel does not admit is a declared value the intent cannot keep; the
+    // proposal is the live clock. Reader and writer share `ceil::want_for_policy`.
+    if let Some(classes) = &intent.ceil {
+        for policy in ceil::policies(host) {
+            let Ok(Some(want)) = ceil::want_for_policy(host, classes, &policy) else {
+                continue;
+            };
+            let Some(current) = host
+                .read_opt(&format!("{policy}/scaling_max_freq"))
+                .and_then(|s| s.trim().parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if current != want {
+                out.push_str(&format!(
+                    "--- ceil {} (live {current})\n- {want}\n+ {current}\n",
+                    policy.rsplit('/').next().unwrap_or(&policy)
                 ));
             }
         }

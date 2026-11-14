@@ -17,6 +17,10 @@ use genarch_settings::{import, pass, report};
 use clap::Parser;
 
 fn main() -> ExitCode {
+    // A closed stdout (`report | head`, a status widget) is a normal consumer. Rust ignores
+    // SIGPIPE, so the write error becomes a panic, and `panic = "abort"` turns that into a
+    // SIGABRT (exit 134). Restore the default so a broken pipe ends the process quietly.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     let cli = Cli::parse();
     match run(cli) {
         Ok(exit) => ExitCode::from(exit.code() as u8),
@@ -42,37 +46,13 @@ fn run(cli: Cli) -> genarch_settings::Result<Exit> {
             Ok(report::exit_code(&verdicts))
         }
         Verb::Apply { dry_run } => {
-            let intent = Intent::load_default(&host)?;
-            let (plan, outcome) = converge::apply(&intent, &host, dry_run)?;
-            print_plan(&plan, dry_run);
-            // A dry run is a rehearsal: `install.sh` runs it under `set -e`, so previewing a
-            // mismatch must not abort the install. The real apply is the one that exits drift.
-            let exit = if dry_run {
-                Exit::Clean
-            } else {
-                converge::apply_exit(&plan)
-            };
-            if !dry_run {
-                if !outcome.backups.is_empty() {
-                    println!("BACKUPS {}", outcome.backups.len());
-                    for backup in &outcome.backups {
-                        println!("  {}", backup.display());
-                    }
-                }
-                for pruned in &outcome.pruned {
-                    println!("PRUNED {pruned}");
-                }
-                for reload in &outcome.reloads {
-                    println!("RELOAD {reload}");
-                }
-                println!(
-                    "SUMMARY planned={} applied={} failed=0 exit={}",
-                    plan.changes.len() + plan.sysctl.len(),
-                    outcome.applied.len(),
-                    exit.code()
-                );
+            // A failed apply must still leave a summary line: exit 3 means "some steps landed"
+            // and an operator reading the log must see the count, even when it is zero.
+            let result = apply_verb(&host, dry_run);
+            if let Err(failure) = &result {
+                println!("SUMMARY applied=0 failed=1 exit={}", failure.kind.code());
             }
-            Ok(exit)
+            result
         }
         Verb::Units => {
             let intent = Intent::load_default(&host)?;
@@ -113,6 +93,36 @@ fn run(cli: Cli) -> genarch_settings::Result<Exit> {
             Ok(Exit::Clean)
         }
     }
+}
+
+fn apply_verb(host: &RealHost, dry_run: bool) -> genarch_settings::Result<Exit> {
+    let intent = Intent::load_default(host)?;
+    let (plan, outcome) = converge::apply(&intent, host, dry_run)?;
+    print_plan(&plan, dry_run);
+    // A dry run is a rehearsal: `install.sh` runs it under `set -e`, so previewing a
+    // mismatch must not abort the install. The real apply is the one that exits drift.
+    let exit = if dry_run { Exit::Clean } else { converge::apply_exit(&plan) };
+    if !dry_run {
+        if !outcome.backups.is_empty() {
+            println!("BACKUPS {}", outcome.backups.len());
+            for backup in &outcome.backups {
+                println!("  {}", backup.display());
+            }
+        }
+        for pruned in &outcome.pruned {
+            println!("PRUNED {pruned}");
+        }
+        for reload in &outcome.reloads {
+            println!("RELOAD {reload}");
+        }
+        println!(
+            "SUMMARY planned={} applied={} failed=0 exit={}",
+            plan.changes.len() + plan.sysctl.len(),
+            outcome.applied.len(),
+            exit.code()
+        );
+    }
+    Ok(exit)
 }
 
 fn print_plan(plan: &converge::Plan, dry_run: bool) {

@@ -17,28 +17,32 @@ values from the ledger in prose.
 Requires a recent Rust toolchain (edition 2024).
 
 ```sh
-cargo test                    # the gate: unit + behavioural + layers + cross-repo contract
+cargo test                    # the gate: unit + converge/layers/cli/profiles + cross-repo contract
 cargo build --release --locked
 cargo clippy --all-targets    # ad hoc; no lint config, warnings worth fixing
 ```
 
 There is no CI by owner decision — run the gate locally before committing.
 
-Single test:
+Single test / one suite:
 
 ```sh
 cargo test --test converge a_converged_host_plans_nothing   # one integration test
 cargo test --test layers a_tombstone_reaches_only_the_layers_below_it
 cargo test --lib per_core_packs_index_above_offset          # one unit test
+cargo test --test profiles                                  # the shipped-profile gate
+cargo test --test cli                                       # completion scripts vs the verb tree
 ```
 
 `tests/contract.rs` reads the ledger through `SYSTEM_TUNING_ROOT` (default
 `~/Projects/system-tuning`) and **fails loudly** when that checkout is absent. It asserts the
 pinned `tests/contract.tsv` equals the compiled `check::REGISTRY` and the owner copy in
 `system-tuning/docs/contract.tsv`, and that every doc anchor resolves to a `##` heading in
-`findings.md`.
+`findings.md`. A new or renamed check ID therefore edits the registry, `tests/contract.tsv` and
+`system-tuning/docs/contract.tsv` in one change — the two copies disagreeing fails the gate.
 
-Behavioural tests never run as root: they construct `FixtureHost` over a scratch tree.
+Behavioural tests never run as root: they construct `FixtureHost` over a scratch tree, record
+writes, and assert byte/mode/atomicity behaviour through `Host`, not by calling module internals.
 
 Useful live commands (unprivileged unless noted):
 
@@ -53,6 +57,17 @@ sudo ./target/debug/genarch-settings converge <boot|resume|ceil>
 Rehearse without touching the machine: `GENARCH_SETTINGS_ROOT=/path/to/copy` redirects every
 live path; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Both are read-only unless
 `apply` runs without `--dry-run`.
+
+Packaging and install:
+
+```sh
+makepkg -f            # the Arch package: binary + intent + units + udev rules + completions
+sudo ./install.sh     # portable path; installs every profile but selects none unless --profile
+```
+
+`install.sh` is the portable path: it installs every profile but selects none, so a fresh host
+runs the base intent until an operator writes the selection. The PKGBUILD ships this host's
+`profile = "zenbook-s16"` selection.
 
 ## Architecture
 
@@ -76,9 +91,12 @@ live path; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Both are 
 - **`managed` owns one anchored line** in a foreign file. Zero or several anchor matches are
   hard errors and write nothing.
 - **`check::REGISTRY` is the single table** behind report order, JSON IDs, doc anchors, and how
-  far `apply` reaches each row. MIRROR, MANAGED, SYNC and PRUNE are computed from the *same*
-  `converge::plan` that `apply` executes, so "apply said ok but live is wrong" cannot happen
-  structurally. `Reach::Intent` rows (CO, POWER) mean "declared", not "measured".
+  far `apply` reaches each row. Adding a row means editing the registry, `tests/contract.tsv` and
+  the ledger's `docs/contract.tsv` together. The report is eleven rows; `--json` is schema 2
+  (top-level `profile`, then `checks`, then `summary`). MIRROR, MANAGED, SYNC and PRUNE are
+  computed from the *same* `converge::plan` that `apply` executes, so "apply said ok but live is
+  wrong" cannot happen structurally. `Reach::Intent` rows (CO, POWER) mean "declared", not
+  "measured"; a green `apply` never implies a green report.
 - **`tree` owns package-tree walking**, the deployable-name rule, and live-path mapping for both
   the loader and the importer. It exists to break the `intent↔converge` cycle.
 - **`pass` dispatches boot/resume/ceil**; `ceil` owns the ceiling class map shared by reader and
@@ -86,8 +104,15 @@ live path; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Both are 
 - **`import` derives a profile from a legacy shell `state/` tree.** Its acceptance is a
   round-trip property: import → load → render reproduces the source bytes.
 - **Exit codes are the operator contract**: `0` clean, `1` drift, `2` precondition, `3` partial.
-  `apply` exits 1 on a profile mismatch even though the writes landed. Do not change this mapping
-  while units/hooks depend on it.
+  `apply` exits 1 on a profile mismatch *when the plan classifies*; an absent managed target
+  refuses the whole apply first (exit 3, nothing written). Do not change this mapping while
+  units/hooks depend on it.
+
+On disk, `intent/` is the base package data: `intent.toml` (schema, `[units]`, `[smu]` labels),
+one typed file per knob family (`sysctl.toml`, `ryzenadj.toml`, `passes.toml`, `ceil.toml`),
+`mirror/<live path>` deployed byte for byte, and `managed/<name>.toml` anchored-line records. A
+profile repeats that shape under `intent/profiles/<slug>/`. A new typed knob family is a file
+plus a registry row; a new mirror or managed record needs no code.
 
 ## Conventions that are easy to miss
 
@@ -97,7 +122,10 @@ read it before changing `src/`. What is specific to working in this repository:
 - **One home per fact.** A knob value lives once in the intent; a rule (deployable names, sysctl
   normalisation, ceiling classes, write policy) lives in exactly one function. When you are about
   to restate a fact in a second file, point at the first instead — that is why the commit
-  trailer lives only in `CONTRIBUTING.md`.
+  trailers live only in `CONTRIBUTING.md`.
+- **A change is judged by declared-vs-live agreement, not by compiling** (`CONTRIBUTING.md`).
+  Never debug by mutating the live host: read `report`, preview with `apply --dry-run`, or drive
+  `FixtureHost` in a test. A write needs `sudo` and is not a diagnostic.
 - **No host identity in anything that ships.** `intent/` is package data read by every host that
   installs the package, so a profile carries no path under `/home/`, no disk UUID, no partition
   device and no other one-unit identity, *measured or documented*. Why, and where that value
@@ -115,6 +143,6 @@ read it before changing `src/`. What is specific to working in this repository:
 - `SCOPE.md`: the engine (`src/`), declared state (`intent/`), and the machine profile
   (`intent/profiles/zenbook-s16/`) are in scope; the judgement ledger and benchmarks are out of
   scope. A second machine is a profile directory plus one selection line, not a fork.
-- Commit messages name the check ID or knob when one changes; the trailer is specified once, in
+- Commit messages name the check ID or knob when one changes; the trailers are specified once, in
   `CONTRIBUTING.md`.
 - Do not commit or push without asking the user.

@@ -624,6 +624,18 @@ impl Host for RealHost {
     }
 
     fn run(&self, argv: &[String]) -> Result<RunResult> {
+        // A rehearsal root redirects every live path, but a child process would still act on
+        // the real machine: a `converge boot` rehearsal would write this laptop's SMU. Refuse
+        // rather than lie about having isolated it. Callers treat a failed reply as SKIPPED.
+        if self.root != Path::new("/") {
+            let program = argv.first().cloned().unwrap_or_default();
+            return Ok(RunResult {
+                success: false,
+                status: -1,
+                stdout: String::new(),
+                stderr: format!("rehearsal root: not executing {program}"),
+            });
+        }
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| Failure::precondition("empty argv"))?;
