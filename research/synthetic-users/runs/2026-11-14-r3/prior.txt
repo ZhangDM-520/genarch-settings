@@ -1,0 +1,13 @@
+CHECK docs: AGENTS.md,CONTEXT.md,CONTRIBUTING.md,DESIGN.md,LICENSE,SCOPE.md,install.sh,
+CHECK report-exit: 1
+CHECK dryrun-exit: 3 plan=0 anomaly=0
+CHECK sigpipe: 134
+CHECK report-last-byte: 1
+CHECK rehearsal-apply: 0 SUMMARY planned=56 applied=56 failed=0 exit=0
+CHECK rehearsal-replan: 1
+CHECK rehearsal-timer: DRIFT
+CHECK harvest-sysctl: 0
+CHECK ceil: 0 max=3000000
+CHECK boot-smu-fail: 0
+CHECK partial: 3 
+CHECK lock: apply lock held by  (/home/arch/l/var/lib/genarch-settings/lock)

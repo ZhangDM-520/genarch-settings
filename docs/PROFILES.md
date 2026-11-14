@@ -144,8 +144,10 @@ genarch-settings report                  # PROFILE must be OK; the rest says wha
 ```
 
 On a machine whose DMI does not match, `PROFILE` reports DRIFT and `apply` exits 1 — the writes
-still happen (you have to be able to see the plan), but nothing pretends the profile fits. There
-is no `--force`.
+still happen (you have to be able to see the plan), but nothing pretends the profile fits. If a
+record the intent carries cannot be classified (a managed target this machine does not have), the
+whole apply is refused with exit 3 and nothing is written; `apply --dry-run` still prints the
+plan and exits 0. There is no `--force`.
 
 ## Rows a documented profile leaves unjudged
 

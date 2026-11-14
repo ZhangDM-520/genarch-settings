@@ -1,0 +1,39 @@
+== A1 empty base intent ==
+genarch-settings: no intent at /home/arch/x1/usr/lib/genarch-settings/intent.toml — is the package installed?
+EXIT=2
+== A2 half-written sysctl (unquoted dotted key) ==
+unknown field `kernel`, expected `values`
+
+EXIT=2
+== A3 unknown key in a layer intent.toml ==
+unknown field `nonsense`, expected one of `schema`, `omit`, `requires`, `status`, `source`, `units`, `smu`
+
+EXIT=2
+== A4 selected profile does not exist ==
+genarch-settings: profile 'nope' is selected in /home/arch/x4/etc/genarch-settings/profile but no profiles/nope exists under /home/arch/x4/usr/lib/genarch-settings or /home/arch/x4/etc/genarch-settings
+EXIT=2
+== A5 unprivileged apply on the live root ==
+nothing was written
+a managed record whose target is optional can be dropped in the operator layer: [omit] managed = ["<name>"]
+EXIT=3
+== A6 SIGKILL mid-apply ==
+/home/arch/adversarial.sh: line 30:  4130 Killed                     GENARCH_SETTINGS_ROOT=$HOME/x6 timeout -s KILL 0.10 genarch-settings apply > /dev/null 2>&1
+KILLED_EXIT=137
+files=26 manifest=no
+MIRROR MANAGED SYNC CEIL 
+REAPPLY_EXIT=0 SUMMARY planned=40 applied=40 failed=0 exit=0
+manifest_after=yes
+== A7 install -> remove -> reinstall ==
+genarch-settings: deployed files listed in /var/lib/genarch-settings/manifest.toml were left in place
+genarch-settings: pre-images (*.bak-YYYYMMDD) sit beside every file the engine replaced
+unit_left=no doc_left=no
+REINSTALL_EXIT=0
+SUMMARY applied=0 failed=1 exit=3
+genarch-settings: refusing to apply: intent cannot be classified
+genarch-settings: apply did not converge this host (see the message above)
+== A8 stale pid text, no lock held ==
+EXIT=0 SUMMARY planned=55 applied=55 failed=0 exit=0
+== A9 renamed binary ==
+REPORT_EXIT=1
+error: unrecognized subcommand 'bogus'
+
