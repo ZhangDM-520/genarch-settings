@@ -239,106 +239,125 @@ pub struct Outcome {
 pub fn apply(intent: &Intent, host: &dyn Host, dry_run: bool) -> Result<(Plan, Outcome)> {
     let plan = plan(intent, host)?;
 
+    let mut outcome = Outcome::default();
+    // A dry run is a rehearsal: `install.sh` runs it under `set -e`, so previewing an intent
+    // that cannot be applied must not abort the install. It writes nothing, prints the plan
+    // (anomalies included) and exits clean; the real apply is the one that refuses.
+    if dry_run {
+        return Ok((plan, outcome));
+    }
+
     if !plan.anomalies.is_empty() {
         let mut msg = String::from("refusing to apply: intent cannot be classified\n");
         for a in &plan.anomalies {
             msg.push_str(&format!("  {a}\n"));
         }
-        msg.push_str("nothing was written");
+        msg.push_str("nothing was written\n");
+        msg.push_str(
+            "a managed record whose target is optional can be dropped in the operator layer: \
+             [omit] managed = [\"<name>\"]",
+        );
         // Deliberately Partial, not Precondition: `managed_zero_match_refuses_and_writes_nothing`
         // pins exit 3 for an unclassifiable intent, and the operator contract must not move
         // while units branch on it. The digest records the argument for 2.
         return Err(Failure::partial(msg));
     }
 
-    let mut outcome = Outcome::default();
-    if dry_run {
-        return Ok((plan, outcome));
-    }
-
     let _lock = host.lock(LOCK_PATH)?;
 
-    // Pre-images for every file that will change, before the first write.
-    for change in &plan.changes {
-        if let Some(backup) = pre_image(host, change.live())? {
-            outcome.backups.push(backup);
+    let result = (|| -> Result<()> {
+        // Pre-images for every file that will change, before the first write.
+        for change in &plan.changes {
+            if let Some(backup) = pre_image(host, change.live())? {
+                outcome.backups.push(backup);
+            }
         }
-    }
 
-    for change in &plan.changes {
-        match change {
-            Planned::Owned { live, mode, bytes } => {
-                host.write(live, bytes, Some(*mode))?;
-                outcome.applied.push(live.clone());
-            }
-            Planned::Managed { record } => {
-                managed::replace(host, record)?;
-                outcome.applied.push(format!("{} ({})", record.target, record.name));
-            }
-            Planned::Prune { live } => {
-                if host.exists(live) {
-                    host.remove(live)?;
+        for change in &plan.changes {
+            match change {
+                Planned::Owned { live, mode, bytes } => {
+                    host.write(live, bytes, Some(*mode))?;
+                    outcome.applied.push(live.clone());
                 }
-                outcome.pruned.push(live.clone());
+                Planned::Managed { record } => {
+                    managed::replace(host, record)?;
+                    outcome.applied.push(format!("{} ({})", record.target, record.name));
+                }
+                Planned::Prune { live } => {
+                    if host.exists(live) {
+                        host.remove(live)?;
+                    }
+                    outcome.pruned.push(live.clone());
+                }
             }
         }
-    }
 
-    // Runtime sysctl re-assert. Not a file write: the kernel value drifts independently of
-    // any config file (TLP rewrites these on every power-source event), so it is re-applied
-    // on every converge rather than only when a file changed.
-    for drift in &plan.sysctl {
-        host.write(&proc_sys_path(&drift.key), drift.want.as_bytes(), None)?;
-        outcome
-            .applied
-            .push(format!("sysctl {}={}", drift.key, drift.want));
-    }
+        // Runtime sysctl re-assert. Not a file write: the kernel value drifts independently of
+        // any config file (TLP rewrites these on every power-source event), so it is re-applied
+        // on every converge rather than only when a file changed.
+        for drift in &plan.sysctl {
+            host.write(&proc_sys_path(&drift.key), drift.want.as_bytes(), None)?;
+            outcome
+                .applied
+                .push(format!("sysctl {}={}", drift.key, drift.want));
+        }
 
-    // Reloads: only for the subsystems a write actually touched, and only on the live root.
-    // A rehearsal root must not poke the machine's systemd or udev.
-    let live_root = host.root() == std::path::Path::new("/");
-    let needs_daemon_reload = live_root
-        && plan.changes.iter().any(|c| {
-            let live = c.live();
-            live.contains("/systemd/") || live.ends_with(".service") || live.ends_with(".timer")
-        });
-    if needs_daemon_reload {
-        host.run(&["systemctl".into(), "daemon-reload".into()])?;
-        outcome.reloads.push("systemctl daemon-reload".into());
-    }
-    let needs_udev_reload =
-        live_root && plan.changes.iter().any(|c| c.live().contains("/udev/rules.d/"));
-    if needs_udev_reload {
-        host.run(&["udevadm".into(), "control".into(), "--reload".into()])?;
-        outcome.reloads.push("udevadm control --reload".into());
-    }
+        // Reloads: only for the subsystems a write actually touched, and only on the live root.
+        // A rehearsal root must not poke the machine's systemd or udev.
+        let live_root = host.root() == std::path::Path::new("/");
+        let needs_daemon_reload = live_root
+            && plan.changes.iter().any(|c| {
+                let live = c.live();
+                live.contains("/systemd/") || live.ends_with(".service") || live.ends_with(".timer")
+            });
+        if needs_daemon_reload {
+            host.run(&["systemctl".into(), "daemon-reload".into()])?;
+            outcome.reloads.push("systemctl daemon-reload".into());
+        }
+        let needs_udev_reload =
+            live_root && plan.changes.iter().any(|c| c.live().contains("/udev/rules.d/"));
+        if needs_udev_reload {
+            host.run(&["udevadm".into(), "control".into(), "--reload".into()])?;
+            outcome.reloads.push("udevadm control --reload".into());
+        }
 
-    // Own what this apply wrote, plus anything already owned that the intent still ships: a
-    // deselected profile keeps its files, but a path this engine never wrote is never claimed.
-    let mut owned = owned_targets(intent);
-    let shipped = shipped_targets(intent);
-    for path in Manifest::load(host)?.owned {
-        if shipped.contains(&path) {
-            owned.insert(path);
+        // Own what this apply wrote, plus anything already owned that the intent still ships: a
+        // deselected profile keeps its files, but a path this engine never wrote is never claimed.
+        let mut owned = owned_targets(intent);
+        let shipped = shipped_targets(intent);
+        for path in Manifest::load(host)?.owned {
+            if shipped.contains(&path) {
+                owned.insert(path);
+            }
+        }
+        Manifest::save(host, &owned, &touched_targets(intent))?;
+
+        // A converged host re-plans empty. Anything left is drift that survived apply, which is
+        // exit 1 — never silence.
+        let after = crate::converge::plan(intent, host)?;
+        if !after.is_empty() {
+            return Err(Failure {
+                kind: crate::exit::Exit::Drift,
+                message: format!(
+                    "drift persisted after apply: {} change(s), {} sysctl value(s)",
+                    after.changes.len(),
+                    after.sysctl.len()
+                ),
+                applied: 0,
+            });
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => Ok((plan, outcome)),
+        Err(mut failure) => {
+            // A summary that says applied=0 after files landed reads as "nothing happened"; the
+            // count is what makes a partial apply legible to the operator who has to roll it back.
+            failure.applied = outcome.applied.len();
+            Err(failure)
         }
     }
-    Manifest::save(host, &owned, &touched_targets(intent))?;
-
-    // A converged host re-plans empty. Anything left is drift that survived apply, which is
-    // exit 1 — never silence.
-    let after = crate::converge::plan(intent, host)?;
-    if !after.is_empty() {
-        return Err(Failure {
-            kind: crate::exit::Exit::Drift,
-            message: format!(
-                "drift persisted after apply: {} change(s), {} sysctl value(s)",
-                after.changes.len(),
-                after.sysctl.len()
-            ),
-        });
-    }
-
-    Ok((plan, outcome))
 }
 
 /// A dated pre-image (`<target>.bak-YYYYMMDD`), never overwritten within a day.

@@ -27,8 +27,12 @@ genarch-settings completions <bash|zsh|fish>   print a completion script on stdo
 Exit codes keep the shell engine's contract: `0` clean · `1` drift · `2` precondition · `3`
 partial. `apply` exits 1 when the selected profile does not match the machine, even though it
 applied — the writes landed against another machine's facts, and that is the drift to fix.
-`--dry-run` always exits 0: it is a preview, and an installer runs it under `set -e`. `apply` writes a dated pre-image beside every file it replaces, keeps the source mode
-and owner, and refuses on any target it cannot classify.
+`apply`'s `0` means the plan it can reach was applied: rows whose `APPLY-SCOPE` is `none`
+(`CEIL`, `TIMER`) are not part of that plan, so `report` may still show drift — a green `apply`
+never implies a green report. `--dry-run` always exits 0: it is a preview, and an installer runs
+it under `set -e`. It prints the refusal when the intent cannot be applied, but it writes
+nothing and never fails the run. `apply` writes a dated pre-image beside every file it replaces,
+keeps the source mode and owner, and refuses on any target it cannot classify.
 
 The report is eleven rows. `--json` is schema 2: a top-level `profile` object (`null` when none
 is selected), then `checks` and `summary`. The `APPLY-SCOPE` line says which rows `apply` can
@@ -144,4 +148,5 @@ judged (there is no CI — the gate is a local command).
 - `SCOPE.md` / `CONTRIBUTING.md` — what belongs here, and the gate a change must pass
 
 The package and `install.sh` install these flat under `/usr/share/doc/genarch-settings/`, where
-`docs/PROFILES.md` becomes `PROFILES.md`.
+`docs/PROFILES.md` becomes `PROFILES.md`. Every `docs/…` link in this README therefore names the
+file's basename on an installed host.

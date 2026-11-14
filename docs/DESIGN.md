@@ -141,7 +141,13 @@ wake devices and Bluetooth ID compiled into the binary. A second AMD laptop was 
 - **A tombstone reaches only the layers below it.** `[omit]` in a layer removes a mirror or a
   managed record declared under it; a base tombstone that matched an operator file would make
   the base the last word. Every tombstone must name something below it, so a stale or
-  mistaken one is a load error.
+  mistaken one is a load error. The shape, in any non-base layer's `intent.toml`:
+
+  ```toml
+  [omit]
+  mirror = ["/etc/tlp.d/01-eco.conf"]
+  managed = ["ppd-conflict"]
+  ```
 - **Units are the one union.** An "expected enabled" entry is an expectation a layer adds and
   cannot withdraw another's; replacing would let a profile silently drop `genarch-settings.service` from
   the report. Every other class merges per key or replaces wholesale.

@@ -460,6 +460,15 @@ fn check_wifi(ctx: &Ctx<'_>) -> Result<Verdict> {
 }
 
 fn check_timer(ctx: &Ctx<'_>) -> Result<Verdict> {
+    // `systemctl is-enabled` answers for the live machine, not for a rehearsal tree: judging a
+    // copy with it invents drift the copy does not have. Unverified is the honest class.
+    if ctx.host.root() != std::path::Path::new("/") {
+        return Ok(verdict(
+            "TIMER",
+            Class::Skipped,
+            "rehearsal root: unit enablement is the live machine's, not the tree's",
+        ));
+    }
     let units = &ctx.intent.units;
     if units.is_empty() {
         return Ok(verdict(
@@ -521,7 +530,23 @@ fn check_prune(ctx: &Ctx<'_>) -> Result<Verdict> {
 
 #[cfg(test)]
 mod tests {
-    use super::smu_value;
+    use super::{check_timer, smu_value, Class, Ctx};
+
+    #[test]
+    fn a_rehearsal_root_does_not_judge_the_live_timer() {
+        use crate::host::FixtureHost;
+        use crate::intent::Intent;
+
+        // `systemctl is-enabled` answers for the machine, never for a copied tree: the row is
+        // unverified there, and reporting DRIFT would invent drift the copy does not have.
+        let host = FixtureHost::new(std::env::temp_dir().join("genarch-timer-rehearsal"));
+        let intent = Intent {
+            units: vec!["genarch-settings.service".into()],
+            ..Default::default()
+        };
+        let ctx = Ctx { host: &host, intent: &intent };
+        assert_eq!(check_timer(&ctx).unwrap().class, Class::Skipped);
+    }
 
     #[test]
     fn reads_the_pipe_delimited_table() {

@@ -34,15 +34,18 @@ impl Exit {
 pub struct Failure {
     pub kind: Exit,
     pub message: String,
+    /// Changes that landed before an apply stopped. Zero for everything that failed before the
+    /// first write, so a summary line never claims "nothing was written" after files landed.
+    pub applied: usize,
 }
 
 impl Failure {
     pub fn precondition(message: impl Into<String>) -> Self {
-        Failure { kind: Exit::Precondition, message: message.into() }
+        Failure { kind: Exit::Precondition, message: message.into(), applied: 0 }
     }
 
     pub fn partial(message: impl Into<String>) -> Self {
-        Failure { kind: Exit::Partial, message: message.into() }
+        Failure { kind: Exit::Partial, message: message.into(), applied: 0 }
     }
 }
 

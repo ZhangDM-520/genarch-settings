@@ -59,6 +59,7 @@ package() {
     install -Dm644 "$doc" "$pkgdir/usr/share/doc/genarch-settings/$doc"
   done
   install -Dm644 docs/DESIGN.md "$pkgdir/usr/share/doc/genarch-settings/DESIGN.md"
+  install -Dm644 docs/CUTOVER.md "$pkgdir/usr/share/doc/genarch-settings/CUTOVER.md"
   # The two pages the installed documents point at. Without them every "see docs/…" line is
   # dead on the machine that only has the package.
   install -Dm644 docs/PROFILES.md "$pkgdir/usr/share/doc/genarch-settings/PROFILES.md"

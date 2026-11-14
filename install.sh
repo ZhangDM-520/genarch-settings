@@ -3,8 +3,8 @@
 #
 # Installs the engine, the intent (base + profiles) and the documentation from a source tree or
 # from a tagged release tarball. Use this on a host without this recipe, or when you want the
-# binary outside the package manager; on Arch the PKGBUILD beside this file is the supported
-# path.
+# binary outside the package manager; on Arch the package built from the PKGBUILD in the source
+# tree is the supported path.
 #
 # The engine reads its intent from $INTENT_DIR (default /usr/lib/genarch-settings) and its
 # machine layer from <prefix>/etc/genarch-settings/profile. Nothing selects a profile for you: a
@@ -194,6 +194,7 @@ for doc in README.md AGENTS.md CONTEXT.md SCOPE.md CONTRIBUTING.md LICENSE; do
   run install -Dm644 "$SOURCE/$doc" "$DOC_DIR/$doc"
 done
 run install -Dm644 "$SOURCE/docs/DESIGN.md" "$DOC_DIR/DESIGN.md"
+run install -Dm644 "$SOURCE/docs/CUTOVER.md" "$DOC_DIR/CUTOVER.md"
 run install -Dm644 "$SOURCE/docs/PROFILES.md" "$DOC_DIR/PROFILES.md"
 run install -Dm755 -- "$0" "$DOC_DIR/install.sh"
 

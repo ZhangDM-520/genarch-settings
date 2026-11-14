@@ -403,9 +403,12 @@ fn lock_at(path: &Path) -> Result<LockGuard> {
     if rc != 0 {
         let mut holder = String::new();
         let _ = std::io::Read::read_to_string(&mut file, &mut holder);
+        // `flock` records no owner: a holder that did not write its pid (a stray `flock(1)`, a
+        // killed process) must not render as an empty field the operator reads past.
+        let holder = holder.trim();
+        let holder = if holder.is_empty() { "an unidentified process (no pid recorded)" } else { holder };
         return Err(Failure::precondition(format!(
-            "apply lock held by {} ({})",
-            holder.trim(),
+            "apply lock held by {holder} ({})",
             path.display()
         )));
     }

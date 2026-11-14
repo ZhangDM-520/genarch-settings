@@ -41,6 +41,7 @@ pub fn table(verdicts: &[Verdict]) -> String {
         }
     }
     out.push_str(&summary_line(verdicts));
+    out.push('\n');
     out
 }
 
@@ -167,4 +168,15 @@ pub fn json(intent: &Intent, verdicts: &[Verdict]) -> String {
         count(verdicts, Class::Skipped),
         exit_code(verdicts).code()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table;
+
+    #[test]
+    fn the_table_terminates_its_last_line() {
+        // `print!` with a table that ends mid-line joins the next shell prompt or output.
+        assert!(table(&[]).ends_with('\n'));
+    }
 }

@@ -50,7 +50,11 @@ fn run(cli: Cli) -> genarch_settings::Result<Exit> {
             // and an operator reading the log must see the count, even when it is zero.
             let result = apply_verb(&host, dry_run);
             if let Err(failure) = &result {
-                println!("SUMMARY applied=0 failed=1 exit={}", failure.kind.code());
+                println!(
+                    "SUMMARY applied={} failed=1 exit={}",
+                    failure.applied,
+                    failure.kind.code()
+                );
             }
             result
         }

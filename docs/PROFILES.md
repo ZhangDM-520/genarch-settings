@@ -66,7 +66,10 @@ the package.
   SKU clock the product string covers; two bands at the same clock are refused as ambiguous. A
   class with `cpus` (CPU-number based) is what a *measured* profile uses.
 - `ryzenadj.toml` — only if the envelope is published **in ryzenadj terms** (`stapm`/`fast`/
-  `slow`, mW). A vendor "TDP" is not one: leave it out and let `SMU` report `SKIPPED`.
+  `slow`, mW). A vendor "TDP" is not one: leave it out and let `SMU` report `SKIPPED`. The
+  file's tables are `raw` (escape-hatch argv, normally `[]`; each entry is
+  `{ args = [...], why = "..." }`), `[co]` (`all`, `per_core`) and `[limits]` (`stapm`, `fast`,
+  `slow`, `stapm_time`, `slow_time`, `power_saving`); any other key is refused by name.
 - `passes.toml` — only genuinely per-machine entries. `wifi_interface` and `settle_secs` are
   fine; `wake_disarm` and `usb_autosuspend` are live observations and belong in a measured
   profile.
@@ -126,7 +129,10 @@ selected and refuses:
   or two bands at the same clock.
 
 Adding a profile is therefore: write the directory, run `cargo test --test profiles`, fix what it
-says. It fails on a *plausible* profile as well as a broken one, which is the point.
+says. It fails on a *plausible* profile as well as a broken one, which is the point. On a host
+that has the package but no source tree there is no cargo test: the check you have is
+`genarch-settings report` (`PROFILE` must not be DRIFT) and `genarch-settings apply --dry-run`,
+which prints the plan, writes nothing and exits 0.
 
 ## Selecting it
 

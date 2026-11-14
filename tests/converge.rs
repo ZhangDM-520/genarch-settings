@@ -453,6 +453,77 @@ fn lock_conflict_is_a_precondition_failure_naming_the_holder() {
 }
 
 #[test]
+fn a_dry_run_of_an_unclassifiable_intent_is_still_a_clean_preview() {
+    let case = Case::new("dry-run-anomaly");
+    case.write_intent_meta();
+    case.write_live("/etc/systemd/journald.conf", "[Journal]\nStorage=persistent\n");
+    case.write_managed(
+        "journald",
+        "name = \"journald\"\ntarget = \"/etc/systemd/journald.conf\"\nmatch = '^SystemMaxUse='\nline = \"SystemMaxUse=256M\"\n",
+    );
+
+    let intent = case.load();
+    let host = case.host();
+    // The record cannot be classified, and the README says a preview always exits 0: it must
+    // print the plan (anomalies included) without failing an installer that runs it under `set -e`.
+    let (plan, outcome) = converge::apply(&intent, &host, true).unwrap();
+    assert!(!plan.anomalies.is_empty(), "the record must not classify");
+    assert!(outcome.applied.is_empty());
+    assert!(host.recorded_writes().is_empty());
+    assert!(!host.exists(converge::Manifest::live_path()));
+
+    // The real apply still refuses, with the pinned exit 3.
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Partial);
+}
+
+#[test]
+fn a_failed_apply_reports_the_changes_that_landed() {
+    let case = Case::new("partial-count");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "new\n");
+    case.write_intent_mirror("/etc/blocked/z.conf", "new\n");
+    // A regular file where the second target's directory must be: ENOTDIR refuses that write
+    // for any uid, so the first mirror has already landed when the apply stops.
+    case.write_live("/etc/blocked", "not a directory\n");
+
+    let intent = case.load();
+    let host = case.host();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Partial);
+    assert_eq!(err.applied, 1, "one change landed before the refusal: {}", err.message);
+    assert_eq!(case.read_live("/etc/a.conf"), "new\n");
+}
+
+#[test]
+fn a_lock_without_a_recorded_pid_still_names_a_holder() {
+    let case = Case::new("lock-anonymous");
+    case.write_intent_meta();
+    case.write_intent_mirror("/etc/a.conf", "new\n");
+    case.write_live("/etc/a.conf", "old\n");
+
+    // Hold the lock the way a foreign process does: `flock(2)` on the file, no pid written into
+    // it (the engine's own holder writes one; a stray `flock(1)` does not).
+    let path = case.live().join("var/lib/genarch-settings/lock");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(rc, 0);
+
+    let intent = case.load();
+    let host = case.host();
+    let err = converge::apply(&intent, &host, false).unwrap_err();
+    assert_eq!(err.kind, genarch_settings::exit::Exit::Precondition);
+    assert!(err.message.contains("unidentified"), "{}", err.message);
+}
+
+#[test]
 fn non_deployable_names_never_deploy() {
     let case = Case::new("stray");
     case.write_intent_meta();
