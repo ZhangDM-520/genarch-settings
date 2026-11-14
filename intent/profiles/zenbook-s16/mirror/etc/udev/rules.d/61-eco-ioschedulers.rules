@@ -1,0 +1,7 @@
+# Profile override for zenbook-s16: use the Adaptive Deadline I/O Scheduler (adios) for NVMe.
+# Order matters: switching elevators resets the queue depth, so scheduler is set on its own
+# line before nr_requests.
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="adios"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="1023"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/read_ahead_kb}="256"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/wbt_lat_usec}="2000"
