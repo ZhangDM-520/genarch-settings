@@ -1,9 +1,3 @@
 /target
 /pkg/
 *.pkg.tar.zst
-
-# local action logs and rehearsal artifacts: working notes, never source
-.logs/
-
-# synthetic-user review harness cache (VM disks and payload builds)
-research/synthetic-users/.cache/

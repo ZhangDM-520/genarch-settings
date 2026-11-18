@@ -1,130 +1,58 @@
-# AGENTS.md — genarch-settings (native tuning engine)
+# AGENTS.md — genarch-settings
 
-Last reviewed: 2026-11-11.
+Last reviewed: 2026-11-17.
 
-## Project overview
+## What this repository is
 
-The tuning engine for one Arch host (ASUS Zenbook S 16 UM5606WA, Ryzen AI 9 HX 370, CachyOS).
-One Rust binary (`genarch-settings`) carries the declared intent, the read-only judge, the converge pass,
-the ryzenadj settings and the systemd units. It replaces the shell `eco` stack that lived in
-`~/Projects/system-tuning` (the ledger, the runbook and the benchmarks stay there).
+One Rust binary that converges one Arch host to a declared, layered **intent**: `report` judges read-only, `apply` plans then applies, `converge <boot|resume|ceil>` runs the scheduled passes. The repository is the engine, the host-agnostic base intent and the machine profiles; the ledger of *why* a knob has its value, and the other side of the cross-repo contract, live in the separate `system-tuning` repository, whose retired shell `eco` stack this engine replaces and which remains the rollback artifact.
 
-Vocabulary: `CONTEXT.md`. Interface reasoning: `docs/DESIGN.md`. Knob judgement and evidence live
-in `system-tuning/docs/findings.md` — this repository does not restate a verdict, and it does not
-restate a knob value in prose.
+Mental model: `src/` (one module per seam: `host`, `intent`, `tree`, `converge`, `managed`, `check`/`report`, `ryzenadj`, `ceil`, `pass`, `import`, `cli`), `intent/` (base + `profiles/<slug>/`), `tests/` (fixture-hosted behavioural, layer, profile, CLI and cross-repo contract gates), `install.sh`/`PKGBUILD` (two packaging paths over one intent tree). Vocabulary is `CONTEXT.md`; interface reasoning `docs/DESIGN.md`; what a profile may ship `docs/PROFILES.md`.
 
-## Commands
+## How to work here
 
-| Command | Effect |
-|---|---|
-| `cargo test` | the gate: unit tests + `tests/converge.rs` (behavioural, fixture-hosted) |
-| `cargo build --release` | the binary |
-| `makepkg -f` | the package (binary + intent + units + udev rules) |
-| `./target/debug/genarch-settings report [--json]` | judge live against intent; unprivileged |
-| `sudo ./target/debug/genarch-settings apply [--dry-run]` | converge live; `--dry-run` writes nothing |
-| `./target/debug/genarch-settings harvest` | the intent change that would match live |
-| `./target/debug/genarch-settings units` | the units the intent expects enabled (the installers consume this) |
-| `./target/debug/genarch-settings completions <bash\|zsh\|fish>` | a completion script on stdout; the packagers write the files |
-| `./target/debug/genarch-settings import <state> <profile-dir>` | derive a machine profile from a legacy shell `state/` tree |
-| `cargo test --test profiles` | the shipped-profile gate: every profile loads and keeps its provenance contract (`docs/PROFILES.md`) |
-| `sudo ./target/debug/genarch-settings converge <boot\|resume\|ceil>` | the scheduled passes |
+- Gate: `cargo test` before every commit, then `cargo build --release --locked`. `cargo clippy --all-targets` is ad hoc; there is no CI by owner decision.
+- Narrower runs: `cargo test --test <converge|layers|profiles|cli> [name]`, `cargo test --lib <name>`.
+- Live: unprivileged for `report`, `harvest`, `units`, `completions`, `import`; root for `apply [--dry-run]` and `converge <boot|resume|ceil>`.
+- Rehearse with `GENARCH_SETTINGS_ROOT` / `GENARCH_SETTINGS_INTENT`; never debug by mutating live host state, and never run the gate as root.
+- The cross-repo contract reads the `system-tuning` checkout (`SYSTEM_TUNING_ROOT` overrides the default location) and fails loudly when it is absent, so a missing ledger is red, not vacuously green.
+- Packaging: `makepkg -f` (ships the measured profile's selection); `sudo ./install.sh` (portable, installs every profile but selects none unless `--profile`).
+- Commit subjects name the check ID or the knob; trailers are in `CONTRIBUTING.md`.
+- Ask before committing or pushing.
 
-Rehearsal without touching the machine: `GENARCH_SETTINGS_ROOT=/path/to/copy` aims every live path at a
-copy of the tree; `GENARCH_SETTINGS_INTENT=/path/to/intent` swaps the intent. Neither is a
-sandbox for *processes*: a rooted host refuses to execute external tools (`Host::run` returns a
-failed reply), so a rehearsal never writes the SMU and never reloads systemd or udev. Both are
-read-only unless you run `apply` without `--dry-run`.
+Full command reference and the cross-repo rule digest are in `.github/copilot-instructions.md`; this file wins if the two disagree.
 
-There is no lint config; `cargo clippy` is ad hoc.
+## Rules and invariants
 
-## Architecture
+- **One home per fact**: a knob value lives once in `intent/`; its rationale in `system-tuning/docs/findings.md`; a rule (`tree::is_deployable_name`, `converge::norm_sysctl`, the ceiling class map, the write policy) in exactly one function; commit trailers in `CONTRIBUTING.md`.
+- **Host facts never enter the base layer, and a unit's identity never enters a shipped profile**: disk UUIDs, home-directory paths, partition devices and silicon offsets belong to a profile (model facts) or the operator layer `/etc/genarch-settings` (one unit's facts). `tests/profiles.rs` enforces it.
+- **Every live mutation goes through `Host`** (`RealHost`/`FixtureHost`), including the manifest, the apply lock (`Host::lock`), pre-image bytes and modes. Offline input reads are the only exceptions: the `intent` package tree and `import`'s legacy `state/` tree.
+- **Pre-images before every write**: dated `<file>.bak-YYYYMMDD`, byte-exact, owner and mode carried on the open fd (`fchown`/`fchmod` before `fsync`/`rename`), one per target per day, never deleted.
+- **Kernel attributes are written in place**: `/sys` and `/proc` refuse a sibling temp, and sysfs parses one `write(2)` syscall — no temp+rename, no `write_all`.
+- **The manifest is the ownership record**: `owned` is prune-eligible (mirrors and the generated sysctl projection), `touched` holds managed targets and is never pruned; a deselected profile's paths stay dormant-owned so a lost selection cannot prune `/etc/fstab`.
+- **Exit codes are the operator contract**: `0` clean, `1` drift, `2` precondition, `3` partial. `apply`'s `0` means the plan it can reach was applied — `CEIL`/`TIMER` are reach `none` and `Reach::Intent` rows (`CO`, `POWER`) are declared, not measured, so a green apply never implies a green report.
+- **Pass isolation**: SMU writes belong to `boot`/`resume`; `ceil` is drift-only; every scheduled pass takes the apply lock; `resume` must never sleep.
+- **A new or renamed check ID edits three places at once**: `check::REGISTRY`, `tests/contract.tsv`, and `system-tuning/docs/contract.tsv`, with every doc anchor resolving to a `##` heading in `findings.md`.
+- **Ask before committing or pushing.**
 
-1. **`host` is the only seam.** `trait Host` + `RealHost` / `FixtureHost`. No module above it may
-   open a file or spawn a process *for live host state* — every read/write of `/etc`, `/sys`,
-   `/proc`, the manifest and the apply lock goes through it, and the lock is `host.lock()` rather
-   than a `flock` call in `converge`. Two deliberate exceptions, both **input data** rather than
-   host state: `intent` reads its own package tree (and `GENARCH_SETTINGS_INTENT`'s rehearsal copy), and
-   `import` reads an offline `system-tuning/state` tree; both use `std::fs` directly. A new need
-   on live state still goes on the trait.
-2. **`intent` is the declared state, resolved from layers** — typed TOML (`sysctl.toml`,
-   `ryzenadj.toml`, `passes.toml`, `ceil.toml`), byte-exact `mirror/` files, and
-   `managed/*.toml` anchored-line records. Layers, in precedence order: **base**
-   (`/usr/lib/genarch-settings`), **profile** (`{base,overlay}/profiles/<name>`, selected by
-   `/etc/genarch-settings/profile`), **operator** (`/etc/genarch-settings`). Scalar maps merge per key, lists
-   replace wholesale (`[units]` is the one union: an expectation a layer adds), mirrors and
-   managed records are whole-file with an `[omit]` tombstone that reaches only the layers below
-   it, in a layer's `intent.toml`. No profile means base only: nothing is guessed, and the rows that
-   need a machine fact report SKIPPED. `tree` owns the walk, the deployable-name rule and the
-   live-path mapping for both the loader and the importer.
-3. **`converge` is plan then apply.** `plan` writes nothing and needs no privilege; `apply`
-   performs exactly the plan, after a pre-image for every target, under an exclusive lock, then
-   re-plans and fails with exit 1 if anything survived.
-4. **`managed` owns one line** inside a foreign file, identified by an anchor pattern. Zero or
-   several matches are hard errors and write nothing.
-5. **`check` + `report`** — one registry table (`check::REGISTRY`) drives report order, doc
-   anchors, apply reach and the JSON schema (2, with a top-level `profile`). Five rows (PROFILE,
-   MIRROR, MANAGED, SYNC, PRUNE) are computed from the same state `apply` executes — PROFILE from
-   the intent and the DMI, three from `converge::plan`, PRUNE from the plan and the manifest — so
-   "apply said ok but live is wrong" is structurally impossible. `Reach::Intent` marks the rows no live observation can judge
-   (CO, POWER); their green means "declared", not "measured".
-6. **`ceil`, `ryzenadj`, `pass`** — the ceiling class map has one home shared by reader and writer;
-   ryzenadj is argv-building only (packing arithmetic tested); `pass` dispatches boot/resume/ceil.
-7. **`import`** derives the intent from the shell engine's `state/` tree. Its acceptance is a
-   round-trip property, not a review: import → load → render must reproduce the source bytes.
+## Pitfalls index
 
-## Conventions
+Detail and mechanisms: the maintainer's private warehouse holds the pitfall and lesson records. Each line here is the actionable rule.
 
-- **One home per fact.** A knob value lives once in the intent; the ledger records why. A rule
-  (deployable names, sysctl normalisation, ceiling classes) lives in exactly one function.
-- **Pre-images before every write**, dated, never deleted, **byte-exact and mode-preserving**:
-  the copy is `read_bytes` + the source's permission bits. A 0644 copy of a 0755 hook restores a
-  non-executable hook (203/EXEC, or silently skipped in `system-sleep/`). One per target per
-  **day**: a second write the same day reuses `<file>.bak-YYYYMMDD` rather than overwriting the
-  state from before the first write.
-- **Kernel attributes are written in place.** `sysfs` and `procfs` cannot host a sibling temp file
-  or a rename, so `/sys` and `/proc` writes bypass the atomic path; everything else is
-  temp + fsync + rename with `O_EXCL|O_NOFOLLOW` on the temp name.
-- **The manifest is the ownership record** (`owned` = prune-eligible, `touched` = foreign files
-  patched and never pruned). The sysctl projection is an engine-written file and therefore lives
-  in `owned`; a target that leaves the intent is pruned from the record, so no value keeps a
-  second home. Nothing is deleted on a hunch.
-- **Every live mutation says which pass it belongs to.** SMU writes are boot/resume only; the
-  ceiling watch is drift-only.
-- Commit messages carry the check ID or knob when they change one. The trailers are in
-  `CONTRIBUTING.md` — that file is their one home.
+- Quote dotted sysctl keys (`"kernel.printk" = …`) — a bare key parses as a nested TOML table and silently renames the knob.
+- Compare sysctl values whole and whitespace-normalised (`converge::norm_sysctl`) — `/proc/sys` emits tabs, intent writes spaces.
+- A backup-shaped mirror name (`*.bak*`, `*~`, `*.tmp`) fails intent load by design: package data with a stray is a packaging bug, not a file to skip.
+- CO `Some(0)` emits `0x00000000` to clear the firmware offset; only `None` leaves it untouched.
+- Schema 3 refuses v2 intents (no `prune`, unknown fields denied) — pruning belongs to the manifest.
+- `[omit]` tombstones reach only the layers below and must match something there; a base tombstone is a load error.
+- `[requires]` mismatch is `PROFILE` drift (exit 1); a missing managed target is an `ANOMALY` that refuses the whole apply first (exit 3, nothing written).
+- An empty `cpus` array is a frequency band; an unparseable list is refused — never read a typo as a band.
+- `system-sleep/` executes every file in the directory: stage temps in sibling `system-sleep-backups/`.
+- A rehearsal root (`GENARCH_SETTINGS_ROOT`) runs no external tools and truncates writes; command-backed rows report `SKIPPED`.
+- `mirror` and `managed` are disjoint; a mirror at the projection path is refused at load.
+- `[units] enabled` is the unit list's only home, and completions come from the clap tree — installers keep no copies.
+- `TIMER` drifts until the `genarch-settings` units are enabled; that is the expected pre-activation state.
+- A failed pass write is a failure (exit 3), never a silent skip.
 
-## Facts that are easy to get wrong
+## Memory
 
-| Fact | How to check / why it matters |
-| --- | --- |
-| A dotted key in `sysctl.toml` **must be quoted** (`"kernel.printk" = "3 3 3 3"`); bare `kernel.printk = …` parses as a table and silently changes the name | The loader rejects a nested table with that hint. Found while writing the importer, which now quotes every dotted key. |
-| sysctl comparison is whitespace-normalised (`converge::norm_sysctl`): `/proc/sys` renders tabs, the intent writes spaces | Comparing raw strings made the shell engine re-assert forever and exit 1 on a converged host. `sysctl_multi_value_is_compared_whole` is the guard. |
-| A mirror entry whose name looks like a backup (`*.bak*`, `*~`, `*.orig`, `*.tmp`, `.#*`) makes the **intent fail to load** | It is package data: the failure must be seen before a plan exists, not skipped at deploy time. One home: `tree::is_deployable_name`. |
-| `hw-tune.fish`'s CO writes embed fish command substitution (`(printf …)`); they are derived from the CO knobs and must not be carried as raw argv | The importer skips `--set-coall`/`--set-coper` lines and any token with a shell construct; the round-trip test asserts the raw list stays empty. |
-| Mode is preserved on an existing target and taken from the intent for a new one | An exec-bit regression is invisible until a unit fails with 203/EXEC. |
-| `resume` must never sleep | A sleep hook blocks the `user.slice` thaw; measured 5.1 s per resume in the shell era. |
-| The report's `TIMER` row is expected to DRIFT until this package's units are enabled | It is the only row that is red on a fully converged host running the shell engine. |
-| `apply` cannot delete a file it does not own; it prunes only what the manifest lists | That is why unmanaging something is safe, and why a second engine must never own the same path. A managed target goes in `touched`, never `owned`: removing the record must not delete the package's file. |
-| `/sys` and `/proc` cannot host a temp file, so kernel attributes are written **in place** | Measured 2026-11-11: `touch /proc/sys/kernel/printk.tmp` → ENOENT, `.tmp` under a policy dir → EACCES, and the uniform temp+rename path made `converge ceil` exit 3 with `scaling_max_freq` unchanged. `kernel_fs()` + `write_in_place()` are the one home; the fixture test simulates a directory that refuses new entries. |
-| A pre-image copies **bytes and the source mode** | A 0644 copy of a 0755 hook restores a non-executable hook (203/EXEC, or silently skipped in `system-sleep/`). `pre_image_keeps_the_source_mode` is the guard; `Host::read_bytes` exists because a mirror may be opaque. |
-| A root write must carry over **ownership**, not just mode | The temp is created 0:0, so `rename` made user files root-owned — measured live: `~/.config/autostart/org.fcitx.Fcitx5.desktop` and `org.kde.kdeconnect.daemon.desktop` were `0:0` after the cutover apply, stripping the user's write access. `RealHost::write` now `fchown`s the temp from the existing metadata before the rename (a **new** target inherits the owner of the directory it lands in), and a root run fails rather than silently leaving root-owned files. |
-| Mode and ownership are set on the **file descriptor**, never the path | A path-based `chmod` after `close` follows a symlink: an unprivileged actor who wins the race in a user-writable directory turns a root `chmod` into `chmod` of an arbitrary file. `fchmod`/`fchown` on the open fd, then `fsync`, then `rename`. |
-| Nothing transient may sit in `/usr/lib/systemd/system-sleep/` | systemd-sleep executes every file there, whatever its name. Writes to that directory stage their temp in the sibling `system-sleep-backups/` (same filesystem, so the rename stays atomic); a crash can no longer leave an executable `.tmp` the next resume would run. `staging_live()` is the one home. |
-| A kernel attribute is written with **one** `write(2)`, never `write_all` | `sysfs` `store()` runs once per syscall and is not a stream: a short write followed by the remainder becomes a second, unrelated value (EINVAL or a malformed setting). `write_in_place` issues one `write` and errors on a short count. |
-| `GENARCH_SETTINGS_ROOT` rehearsals truncate kernel-attribute files | A rehearsal root is a normal filesystem; without `O_TRUNC` a shorter value left the old tail behind. Real `/sys` and `/proc` refuse `O_TRUNC`, so the flag is conditional on the root being `/`. |
-| One path, one owner: `mirror` and `managed` are disjoint | Overlap made a whole-file write fight a line patch on the same bytes. `Intent::validate` refuses it. Several managed records on one target stay legal — that is how `asusd.ron` is patched at five anchors. |
-| A **documented** profile carries no `mirror/`, no `[co]`, no wake/USB list, and must cite a source | A value a publication cannot state is a measurement; shipping it in a documented profile is how a "portable" profile silently becomes one laptop's. `tests/profiles.rs` refuses it, and `status = "documented"` without `source` fails at load. `docs/PROFILES.md` is the contract. |
-| A ceiling class may omit `cpus` (a **band** class) | A machine this repository has not booted has no known CPU numbering. The band applies by `cpuinfo_max_freq` (`fallback_from_cpuinfo`): the highest declared clock the unit admits. Several bands are normal — one DMI product string often covers SKUs at different clocks — but two bands at the same clock are refused as ambiguous, and a machine admitting *less* than every band is reported, not capped. |
-| A **deselected** profile's mirrors stay owned (dormant) and are never pruned | With no profile selected the intent stops shipping the profile's mirrors, and "no longer shipped" would prune them — deleting a system file because a config line went missing. `Intent::dormant` keeps them in `owned_targets`; only a profile that stops shipping a path hands it back. |
-| A profile's `[requires]` mismatch is **PROFILE drift (exit 1)**, not a load error | The operator must be able to see the drift and fix the selection; `converge` prints the mismatch beside the plan, `converge::apply_exit` makes the finished apply exit 1, and `main` prints `SUMMARY … exit=1`. `genarch-settings apply` has no `--force`. **Caveat**: the mismatch only reaches exit 1 when every record can be classified. On a machine without the profile's own targets (an ASUS profile on a non-ASUS box has no `asusd.ron`), `plan.anomalies` refuses the whole apply first — exit 3, "nothing was written". |
-| A rehearsal root does not execute external tools | `GENARCH_SETTINGS_ROOT` redirects paths, not processes: `RealHost::run` returns a failed reply instead of running `ryzenadj`, `systemctl` or `udevadm`. Without that, a rehearsal boot wrote the real machine's SMU. Rows that depend on a command report SKIPPED. |
-| An unclassifiable intent is exit 3, not exit 2 | `managed_zero_match_refuses_and_writes_nothing` pins `Exit::Partial`; the message says "nothing was written", but the operator contract does not move while units branch on it. The digest in `docs/reviews/` records the case for `Precondition`. |
-| An `[omit]` tombstone reaches only the layers **below** the one declaring it | The operator has the last word; a base tombstone that removed an operator file would invert the precedence. A tombstone that names nothing below it is a load error, so a stale one cannot be silently ignored. |
-| The unit list has exactly one home (`[units] enabled`) | `genarch-settings units` prints it and both install scripts enable that list; a renamed unit used to need edits in `genarch-settings.install`, `install.sh` and the intent. |
-| `Some(0)` and `None` are different CO declarations | `None` leaves the firmware's offset alone; `Some(0)` writes zero, which clears it. `argv_plan` sends `--set-coall=0x00000000` for the latter — the old `all != 0` test could not tell them apart. |
-| A v2 `intent.toml` is refused, not silently stripped of its `prune` list | Schema 3 removed the declared removal list (the manifest owns pruning). `Meta` denies unknown fields, so an old intent fails loudly instead of applying without its removals. |
-| Scheduled passes take the apply lock | The 2-minute ceil timer and an operator's `apply` both write kernel attributes; without the lock the last writer wins silently. A held lock makes the pass log `pass skipped` and return clean — the timer runs again in two minutes. |
-| The binary name, the live directories and the unit names are **one fact** (`genarch-settings`) | Renaming the binary alone would leave `/etc/genarch` and `genarch.service` behind. 0.4.0 moved all of them; the ownership record is what lets the new engine prune the five live files that changed *name*, so the package's `pre_install` moves `/etc/genarch` and `/var/lib/genarch` before the new binary ever runs. Without that move the old unit stays a second writer. |
-| A refused write in a pass is a failure (exit 3), never `.is_ok()` | The `pass` code swallowed sysfs/procfs errors, so a pass exited 0 while the governor/wake/USB/sysctl value never moved. `a_refused_pass_write_is_a_failure_not_a_silent_skip` is the guard. |
-| Completion scripts are **generated by the binary**, never checked in | `genarch-settings completions <shell>` reads the same clap command tree the parser uses; the package and `install.sh` write the three files from it. A hand-written script would drift from the verbs the first time one was added. `tests/cli.rs` asserts each shell's dialect names the binary and every verb. |
-| In `ceil.toml`, "no CPUs" and "CPUs I could not parse" are different, and only the first is a band | `parse_cpu_list` used to drop unparseable chunks, so `cpus = ["0–3"]` (an en-dash) became an empty set and the measured class silently applied by frequency to every policy — capping Zen 5c at the Zen 5 clock. It now returns `None` and `CeilConfig::parse` refuses the class; an empty array stays a deliberate band. `a_mistyped_cpu_list_is_refused_not_read_as_a_band` is the guard. |
+Durable project memory — action logs, design and profile records, lessons, review history, settled and open decisions — lives in the maintainer's private warehouse (start at its `AGENTS.md`; its lessons index is the pitfall route). Search it by meaning before re-deriving anything. This repository carries the live rules; the warehouse carries the history and the evidence.
